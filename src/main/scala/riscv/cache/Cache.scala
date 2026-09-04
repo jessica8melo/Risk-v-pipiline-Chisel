@@ -1,0 +1,214 @@
+package riscv.cache
+
+import chisel3._
+import chisel3.util._
+
+/** Parametros geometricos do L1 (compartilhados por ICache e DCache).
+  *
+  * Configuracao alvo:
+  *   - L1 dividido em ICache + DCache
+  *   - associatividade em conjunto 4-way
+  *   - linha de 16 bytes (4 palavras de 32 bits)
+  *   - substituicao LRU
+  *   - escrita write-back + write-allocate
+  *   - cache bloqueante, single core
+  *
+  * NOTA DE PROJETO: o enunciado fala em "capacidade total de 16KiB" para o
+  * L1 ja dividido em ICache + DCache. Aqui assumimos que os 16KiB sao a
+  * SOMA das duas caches (8KiB para a ICache, 8KiB para a DCache). Se a
+  * intencao for 16KiB *por cache* (32KiB no total), basta trocar
+  * `bytesPerCache` para apontar direto para 16 * 1024.
+  */
+object CacheParams {
+  val lineBytes: Int = 16
+  val ways: Int = 4
+  val wordBytes: Int = 4
+  val wordsPerLine: Int = lineBytes / wordBytes // 4 palavras por linha
+
+  private val totalBytesBothCaches: Int = 16 * 1024
+  val bytesPerCache: Int = totalBytesBothCaches / 2 // 8 KiB para cada cache
+
+  val numLines: Int = bytesPerCache / lineBytes
+  val numSets: Int = numLines / ways
+
+  val offsetBits: Int = log2Ceil(lineBytes)
+  val indexBits: Int = log2Ceil(numSets)
+  val tagBits: Int = 32 - indexBits - offsetBits
+
+  require(isPow2(ways), "ways precisa ser potência de 2 (necessário p/ LRU e indexação)")
+  require(isPow2(numSets), "numSets precisa ser potência de 2 (necessario p/ indexação)")
+}
+
+/** Decomposicao do endereco de 32 bits em tag / index / offset, de acordo
+  * com a geometria de CacheParams. Uso interno da cache, mas fica aqui
+  * porque decorre diretamente do sinal de endereco da interface CPU<->Cache.
+  */
+class CacheAddress extends Bundle {
+  val tag = UInt(CacheParams.tagBits.W)
+  val index = UInt(CacheParams.indexBits.W)
+  val offset = UInt(CacheParams.offsetBits.W)
+}
+
+object CacheAddress {
+  def fromUInt(addr: UInt): CacheAddress = {
+    val decoded = Wire(new CacheAddress)
+    decoded.offset := addr(CacheParams.offsetBits - 1, 0)
+    decoded.index := addr(
+      CacheParams.offsetBits + CacheParams.indexBits - 1,
+      CacheParams.offsetBits
+    )
+    decoded.tag := addr(31, CacheParams.offsetBits + CacheParams.indexBits)
+    decoded
+  }
+}
+
+/** Interface entre o pipeline (CPU) e uma cache L1 (ICache ou DCache).
+  *
+  * Direcoes definidas do ponto de vista da CPU: quem instancia a cache usa
+  * `Flipped(new CpuCacheIO)`. Os campos de dado/tamanho reaproveitam a
+  * mesma convencao de `DataMemory` (memSize/unsignedLoad de RV32I.MemorySize)
+  * para nao duplicar semantica ja existente no projeto.
+  */
+class CpuCacheIO extends Bundle {
+  // CPU -> Cache
+  val request = Output(Bool()) // pedido valido neste ciclo
+  val write = Output(Bool()) // false = load/fetch, true = store (sempre false na ICache)
+  val address = Output(UInt(32.W)) // endereco de byte
+  val writeData = Output(UInt(32.W))
+  val memSize = Output(UInt(2.W)) // RV32I.MemorySize: BYTE/HALF/WORD
+  val unsignedLoad = Output(Bool())
+
+  // Cache -> CPU
+  val readData = Input(UInt(32.W))
+  val hit = Input(Bool()) // 1 quando o pedido deste ciclo foi atendido (dado em readData valido)
+  val stall = Input(Bool()) // 1 enquanto a cache ainda resolve um miss; pipeline deve congelar
+}
+
+/** Interface entre uma cache L1 e o proximo nivel de memoria (a memoria
+  * principal do projeto). Transfere uma linha inteira por vez: refill em
+  * miss de leitura, write-back no despejo de uma linha suja.
+  *
+  * Como a cache e bloqueante e o design e single core, um simples par
+  * request/ready (sem Decoupled/Valid-Ready do chisel3.util) e suficiente e
+  * fica consistente com o estilo do resto do projeto.
+  */
+class CacheMemIO extends Bundle {
+  // Cache -> Memoria
+  val request = Output(Bool())
+  val write = Output(Bool()) // false = le linha (refill), true = escreve linha (write-back)
+  val address = Output(UInt(32.W)) // endereco alinhado ao inicio da linha
+  val writeLine = Output(Vec(CacheParams.wordsPerLine, UInt(32.W)))
+
+  // Memoria -> Cache
+  val readLine = Input(Vec(CacheParams.wordsPerLine, UInt(32.W)))
+  val ready = Input(Bool()) // 1 quando a operacao pedida (refill ou write-back) termina
+}
+
+/** Esqueleto de uma cache L1 unica (instanciada duas vezes: ICache e DCache).
+  *
+  * Config: 4-way set-associative, linha de 16B, LRU, write-back +
+  * write-allocate, bloqueante, single core (ver CacheParams).
+  *
+  * Por enquanto so a interface esta ligada: todo pedido fica em stall e
+  * nunca sinaliza hit. A logica real entra depois:
+  *   - arrays de tag / dado / valid / dirty por via (uma SyncReadMem ou
+  *     Vec de Regs por via costuma funcionar bem aqui);
+  *   - contador/registrador de LRU por conjunto;
+  *   - maquina de estados (IDLE / REFILL / WRITEBACK) para orquestrar
+  *     miss -> pedido a memoria -> preenchimento da linha -> retomada;
+  *   - comparador de tag entre as `ways` para decidir hit/miss.
+  */
+class Cache(isInstructionCache: Boolean = false) extends Module {
+  val io = IO(new Bundle {
+    val cpu = Flipped(new CpuCacheIO)
+    val mem = new CacheMemIO
+  })
+
+  // Decomposicao do endereco pedido pela CPU (tag/index/offset), pronta
+  // para a logica de hit/miss que ainda vai ser implementada.
+  val addr = CacheAddress.fromUInt(io.cpu.address)
+
+  // TODO(hit/miss real): comparar addr.tag com as `ways` do conjunto
+  // addr.index, verificando o bit valid de cada via.
+  io.cpu.hit := false.B
+  io.cpu.readData := 0.U
+
+  // TODO(stall real): so deve ficar em 1 durante um miss em andamento
+  // (esperando REFILL/WRITEBACK terminar), nao a cada pedido.
+  io.cpu.stall := io.cpu.request
+
+  // TODO(mem real): disparar request/write/address para a memoria quando
+  // houver miss (refill) ou despejo de linha suja (write-back).
+  io.mem.request := false.B
+  io.mem.write := false.B
+  io.mem.address := io.cpu.address
+  io.mem.writeLine := VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
+
+  if (isInstructionCache) {
+    // ICache e somente leitura: a CPU nunca deve pedir escrita por essa porta.
+    assert(!io.cpu.write, "ICache nao aceita escrita")
+  }
+}
+
+/** L1 dividido em ICache + DCache, cada uma seguindo CacheParams.
+  *
+  * Cada cache expoe sua propria porta de memoria (iMem/dMem). Como o design
+  * e bloqueante e single core, isso evita qualquer arbitragem por enquanto
+  * -- exatamente como o projeto ja faz hoje com InstructionMemory e
+  * DataMemory como modulos separados. Se no futuro as duas caches
+  * precisarem compartilhar um unico barramento fisico de memoria, um
+  * arbitro simples (prioridade fixa para a DCache, por exemplo) entra aqui
+  * na frente de iMem/dMem.
+  */
+class L1Cache extends Module {
+  val io = IO(new Bundle {
+    // Pipeline -> Cache (ligar no estagio de fetch e no estagio de memoria)
+    val iCache = Flipped(new CpuCacheIO)
+    val dCache = Flipped(new CpuCacheIO)
+
+    // Cache -> Memoria principal
+    val iMem = new CacheMemIO
+    val dMem = new CacheMemIO
+  })
+
+  val instructionCache = Module(new Cache(isInstructionCache = true))
+  val dataCache = Module(new Cache(isInstructionCache = false))
+
+  // CPU <-> ICache
+  instructionCache.io.cpu.request := io.iCache.request
+  instructionCache.io.cpu.write := io.iCache.write
+  instructionCache.io.cpu.address := io.iCache.address
+  instructionCache.io.cpu.writeData := io.iCache.writeData
+  instructionCache.io.cpu.memSize := io.iCache.memSize
+  instructionCache.io.cpu.unsignedLoad := io.iCache.unsignedLoad
+  io.iCache.readData := instructionCache.io.cpu.readData
+  io.iCache.hit := instructionCache.io.cpu.hit
+  io.iCache.stall := instructionCache.io.cpu.stall
+
+  // ICache <-> Memoria
+  io.iMem.request := instructionCache.io.mem.request
+  io.iMem.write := instructionCache.io.mem.write
+  io.iMem.address := instructionCache.io.mem.address
+  io.iMem.writeLine := instructionCache.io.mem.writeLine
+  instructionCache.io.mem.readLine := io.iMem.readLine
+  instructionCache.io.mem.ready := io.iMem.ready
+
+  // CPU <-> DCache
+  dataCache.io.cpu.request := io.dCache.request
+  dataCache.io.cpu.write := io.dCache.write
+  dataCache.io.cpu.address := io.dCache.address
+  dataCache.io.cpu.writeData := io.dCache.writeData
+  dataCache.io.cpu.memSize := io.dCache.memSize
+  dataCache.io.cpu.unsignedLoad := io.dCache.unsignedLoad
+  io.dCache.readData := dataCache.io.cpu.readData
+  io.dCache.hit := dataCache.io.cpu.hit
+  io.dCache.stall := dataCache.io.cpu.stall
+
+  // DCache <-> Memoria
+  io.dMem.request := dataCache.io.mem.request
+  io.dMem.write := dataCache.io.mem.write
+  io.dMem.address := dataCache.io.mem.address
+  io.dMem.writeLine := dataCache.io.mem.writeLine
+  dataCache.io.mem.readLine := io.dMem.readLine
+  dataCache.io.mem.ready := io.dMem.ready
+}
