@@ -108,18 +108,6 @@ class CacheTest extends AnyFlatSpec with ChiselScalatestTester {
     }
   }
 
-  it should "nao disparar pedido a memoria por enquanto" in {
-    test(new Cache) { dut =>
-      idle(dut)
-      dut.io.cpu.request.poke(true.B)
-      dut.io.cpu.address.poke(0x2000.U)
-      dut.clock.step(2)
-
-      dut.io.mem.request.expect(false.B)
-      dut.io.mem.write.expect(false.B)
-    }
-  }
-
   it should "aceitar leitura na ICache sem violar o assert" in {
     test(new Cache(isInstructionCache = true)) { dut =>
       idle(dut)

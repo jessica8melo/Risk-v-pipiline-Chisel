@@ -181,19 +181,26 @@ class CacheArrays extends Module {
   }
 }
 
-/** Esqueleto de uma cache L1 unica (instanciada duas vezes: ICache e DCache).
+/** Cache L1 unica (instanciada duas vezes: ICache e DCache).
   *
-  * Config: 4-way set-associative, linha de 16B, LRU, write-back +
-  * write-allocate, bloqueante, single core (ver CacheParams).
+  * Config: 4-way set-associative, linha de 16B, write-back + write-allocate,
+  * bloqueante, single core (ver CacheParams).
   *
-  * Por enquanto so a interface esta ligada: todo pedido fica em stall e
-  * nunca sinaliza hit. A logica real entra depois:
-  *   - arrays de tag / dado / valid / dirty por via (uma SyncReadMem ou
-  *     Vec de Regs por via costuma funcionar bem aqui);
-  *   - contador/registrador de LRU por conjunto;
-  *   - maquina de estados (IDLE / REFILL / WRITEBACK) para orquestrar
-  *     miss -> pedido a memoria -> preenchimento da linha -> retomada;
-  *   - comparador de tag entre as `ways` para decidir hit/miss.
+  * Maquina de estados (controlador bloqueante):
+  *
+  *   sIdle       --request-->        sCompareTag
+  *   sCompareTag --hit-->            sIdle          (atende load/store)
+  *   sCompareTag --miss, vitima suja--> sWriteBack
+  *   sCompareTag --miss, vitima limpa/invalida--> sAllocate
+  *   sWriteBack  --mem.ready-->      sAllocate      (despeja a linha suja)
+  *   sAllocate   --mem.ready-->      sCompareTag    (preenche a linha e reavalia)
+  *
+  * Contrato com a CPU: enquanto `stall` = 1 a CPU deve manter o pedido
+  * (request/write/address/...) estavel, porque o controlador le o endereco
+  * direto da porta durante todo o miss.
+  *
+  * Pendente: escolha da vitima por LRU (hoje: primeira via invalida, senao
+  * via 0) e atualizacao do LRU nos hits.
   */
 class Cache(isInstructionCache: Boolean = false) extends Module {
   val io = IO(new Bundle {
@@ -201,14 +208,16 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
     val mem = new CacheMemIO
   })
 
-  // Decomposicao do endereco pedido pela CPU (tag/index/offset), pronta
-  // para a logica de hit/miss que ainda vai ser implementada.
-  val addr = CacheAddress.fromUInt(io.cpu.address)
+  private val wayBits = log2Ceil(CacheParams.ways)
 
-  // Arrays de armazenamento. A leitura do conjunto addr.index e combinacional;
-  // a porta de escrita fica ociosa ate a FSM (refill / store hit) existir.
+  val addr = CacheAddress.fromUInt(io.cpu.address)
+  val wordIdx = addr.offset(CacheParams.offsetBits - 1, 2)
+  val byteOff = addr.offset(1, 0)
+
+  // ---------------------------------------------------------------- arrays
   val arrays = Module(new CacheArrays)
   arrays.io.readIndex := addr.index
+  // porta de escrita ociosa por padrao; a FSM sobrescreve abaixo
   arrays.io.write.en := false.B
   arrays.io.write.way := 0.U
   arrays.io.write.index := addr.index
@@ -219,24 +228,127 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   arrays.io.write.valid := false.B
   arrays.io.write.dirty := false.B
 
-  // Vias do conjunto selecionado (tag/valid/dirty/dado), prontas para o hit/miss.
+  // Vias do conjunto selecionado (leitura combinacional).
   val setLines = arrays.io.read
 
-  // TODO(hit/miss real): comparar addr.tag com setLines(w).tag, verificando
-  // setLines(w).valid de cada via.
+  // ------------------------------------------------------------ hit / miss
+  val wayHit = VecInit(setLines.map(l => l.valid && l.tag === addr.tag))
+  val tagHit = wayHit.asUInt.orR
+  val hitWay = PriorityEncoder(wayHit.asUInt)
+  val hitLine = setLines(hitWay)
+  val hitWord = hitLine.data(wordIdx)
+
+  // ------------------------------------------------- load: extracao de dado
+  // Convencao de memSize (funct3[1:0] do RV32I): 0 = byte, 1 = half, 2 = word.
+  val isByte = io.cpu.memSize === 0.U
+  val isHalf = io.cpu.memSize === 1.U
+  val shiftBits = Cat(byteOff, 0.U(3.W))
+  val shifted = hitWord >> shiftBits
+  val loadByte = Cat(Fill(24, shifted(7) && !io.cpu.unsignedLoad), shifted(7, 0))
+  val loadHalf = Cat(Fill(16, shifted(15) && !io.cpu.unsignedLoad), shifted(15, 0))
+  val loadData = Mux(isByte, loadByte, Mux(isHalf, loadHalf, hitWord))
+
+  // ---------------------------------------------- store: merge na palavra
+  val sizeMask = Mux(isByte, "hFF".U(32.W), Mux(isHalf, "hFFFF".U(32.W), "hFFFFFFFF".U(32.W)))
+  val storeMask = (sizeMask << shiftBits)(31, 0)
+  val storeWord = (hitWord & ~storeMask) | ((io.cpu.writeData << shiftBits)(31, 0) & storeMask)
+
+  // ------------------------------------------------------- escolha de vitima
+  val invalidWays = VecInit(setLines.map(l => !l.valid))
+  val hasInvalid = invalidWays.asUInt.orR
+  // TODO(LRU): trocar o 0.U por via menos recentemente usada do conjunto.
+  val victimWay = Mux(hasInvalid, PriorityEncoder(invalidWays.asUInt), 0.U(wayBits.W))
+  val victimWayLine = setLines(victimWay)
+  val victimNeedsWriteBack = victimWayLine.valid && victimWayLine.dirty
+
+  // ------------------------------------------------------------------- FSM
+  val sIdle :: sCompareTag :: sWriteBack :: sAllocate :: Nil = Enum(4)
+  val state = RegInit(sIdle)
+  val victimReg = RegInit(0.U(wayBits.W))
+  val victimLine = setLines(victimReg)
+
+  // Saidas padrao (Wire implicito: ultima atribuicao vence)
   io.cpu.hit := false.B
   io.cpu.readData := 0.U
+  io.cpu.stall := false.B
 
-  // TODO(stall real): so deve ficar em 1 durante um miss em andamento
-  // (esperando REFILL/WRITEBACK terminar), nao a cada pedido.
-  io.cpu.stall := io.cpu.request
-
-  // TODO(mem real): disparar request/write/address para a memoria quando
-  // houver miss (refill) ou despejo de linha suja (write-back).
   io.mem.request := false.B
   io.mem.write := false.B
-  io.mem.address := io.cpu.address
+  io.mem.address := Cat(addr.tag, addr.index, 0.U(CacheParams.offsetBits.W))
   io.mem.writeLine := VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
+
+  switch(state) {
+    is(sIdle) {
+      // pedido aceito, ainda nao atendido
+      io.cpu.stall := io.cpu.request
+      when(io.cpu.request) { state := sCompareTag }
+    }
+
+    is(sCompareTag) {
+      when(!io.cpu.request) {
+        state := sIdle
+      }.elsewhen(tagHit) {
+        io.cpu.hit := true.B
+        io.cpu.readData := loadData
+        state := sIdle
+
+        if (!isInstructionCache) {
+          when(io.cpu.write) {
+            // store hit: grava so a palavra alvo e marca a linha como suja
+            arrays.io.write.en := true.B
+            arrays.io.write.way := hitWay
+            arrays.io.write.index := addr.index
+            arrays.io.write.wordMask := VecInit(
+              (0 until CacheParams.wordsPerLine).map(i => wordIdx === i.U)
+            )
+            arrays.io.write.data := VecInit(Seq.fill(CacheParams.wordsPerLine)(storeWord))
+            arrays.io.write.metaEn := true.B
+            arrays.io.write.tag := addr.tag
+            arrays.io.write.valid := true.B
+            arrays.io.write.dirty := true.B
+          }
+        }
+      }.otherwise {
+        io.cpu.stall := true.B
+        victimReg := victimWay
+        state := Mux(victimNeedsWriteBack, sWriteBack, sAllocate)
+      }
+    }
+
+    is(sWriteBack) {
+      io.cpu.stall := true.B
+      io.mem.request := true.B
+      io.mem.write := true.B
+      io.mem.address := Cat(victimLine.tag, addr.index, 0.U(CacheParams.offsetBits.W))
+      io.mem.writeLine := victimLine.data
+      when(io.mem.ready) { state := sAllocate }
+    }
+
+    is(sAllocate) {
+      io.cpu.stall := true.B
+      io.mem.request := true.B // write = false (refill), endereco alinhado a linha
+      when(io.mem.ready) {
+        arrays.io.write.en := true.B
+        arrays.io.write.way := victimReg
+        arrays.io.write.index := addr.index
+        arrays.io.write.wordMask := VecInit(Seq.fill(CacheParams.wordsPerLine)(true.B))
+        arrays.io.write.data := io.mem.readLine
+        arrays.io.write.metaEn := true.B
+        arrays.io.write.tag := addr.tag
+        arrays.io.write.valid := true.B
+        arrays.io.write.dirty := false.B
+        state := sCompareTag // reavalia: agora e hit (e trata o store, se for o caso)
+      }
+    }
+  }
+
+  // Endereco precisa ficar estavel enquanto o miss e resolvido (ver contrato).
+  val prevBusy = RegNext(io.cpu.request && io.cpu.stall, false.B)
+  val prevAddress = RegNext(io.cpu.address)
+  assert(
+    !(prevBusy && io.cpu.request && io.cpu.address =/= prevAddress),
+    "endereco mudou durante um miss em andamento"
+  )
 
   if (isInstructionCache) {
     // ICache e somente leitura: a CPU nunca deve pedir escrita por essa porta.
