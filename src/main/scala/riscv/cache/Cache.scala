@@ -206,6 +206,11 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val io = IO(new Bundle {
     val cpu = Flipped(new CpuCacheIO)
     val mem = new CacheMemIO
+    // Observabilidade para testes (validos no ciclo em que hit = 1).
+    val dbg = Output(new Bundle {
+      val hitWay = UInt(log2Ceil(CacheParams.ways).W) // via em que a tag casou
+      val hitDirty = Bool() // dirty da linha ANTES de um eventual store deste ciclo
+    })
   })
 
   private val wayBits = log2Ceil(CacheParams.ways)
@@ -237,6 +242,8 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val hitWay = PriorityEncoder(wayHit.asUInt)
   val hitLine = setLines(hitWay)
   val hitWord = hitLine.data(wordIdx)
+  io.dbg.hitWay := hitWay
+  io.dbg.hitDirty := hitLine.dirty
 
   // ------------------------------------------------- load: extracao de dado
   // Convencao de memSize (funct3[1:0] do RV32I): 0 = byte, 1 = half, 2 = word.
@@ -246,7 +253,11 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val shifted = hitWord >> shiftBits
   val loadByte = Cat(Fill(24, shifted(7) && !io.cpu.unsignedLoad), shifted(7, 0))
   val loadHalf = Cat(Fill(16, shifted(15) && !io.cpu.unsignedLoad), shifted(15, 0))
-  val loadData = Mux(isByte, loadByte, Mux(isHalf, loadHalf, hitWord))
+  // A ICache sempre entrega a palavra inteira (o fetch seleciona o que precisa),
+  // ignorando memSize/unsignedLoad.
+  val loadData =
+    if (isInstructionCache) hitWord
+    else Mux(isByte, loadByte, Mux(isHalf, loadHalf, hitWord))
 
   // ---------------------------------------------- store: merge na palavra
   val sizeMask = Mux(isByte, "hFF".U(32.W), Mux(isHalf, "hFFFF".U(32.W), "hFFFFFFFF".U(32.W)))
@@ -340,6 +351,13 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         state := sCompareTag // reavalia: agora e hit (e trata o store, se for o caso)
       }
     }
+  }
+
+  // Acesso desalinhado nao e suportado: o merge/extracao trabalha dentro de uma
+  // unica palavra e corromperia o dado silenciosamente. Falha alto em simulacao.
+  if (!isInstructionCache) {
+    val misaligned = (isHalf && byteOff(0)) || (!isByte && !isHalf && byteOff =/= 0.U)
+    assert(!(io.cpu.request && misaligned), "acesso desalinhado nao suportado pela DCache")
   }
 
   // Endereco precisa ficar estavel enquanto o miss e resolvido (ver contrato).
