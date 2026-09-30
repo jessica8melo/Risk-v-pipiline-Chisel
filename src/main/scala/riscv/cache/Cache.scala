@@ -181,6 +181,62 @@ class CacheArrays extends Module {
   }
 }
 
+/** LRU verdadeiro por conjunto, para associatividade `ways` (potencia de 2).
+  *
+  * Guarda, para cada conjunto, o "rank" de cada via: 0 = mais recentemente
+  * usada (MRU) ... ways-1 = menos recentemente usada (LRU). Os ranks de um
+  * conjunto formam sempre uma permutacao de 0..ways-1 (reset: via i tem
+  * rank i).
+  *
+  * Toque em uma via w: w passa a rank 0 e toda via com rank menor que o
+  * antigo rank de w sobe uma posicao; as mais antigas nao mudam.
+  *
+  * Leitura combinacional de `lruWay` (via de rank ways-1 do conjunto `index`),
+  * escrita sincrona pela porta `touch*`.
+  *
+  * Custo: numSets * ways * log2(ways) flip-flops (1024 para 128x4x2).
+  * Alternativa mais barata, se area importar: pseudo-LRU em arvore
+  * (ways-1 bits por conjunto), ao custo de nao ser LRU exato.
+  */
+class CacheLru extends Module {
+  private val wayBits = log2Ceil(CacheParams.ways)
+
+  val io = IO(new Bundle {
+    val index = Input(UInt(CacheParams.indexBits.W))
+    val lruWay = Output(UInt(wayBits.W))
+
+    val touch = Input(Bool())
+    val touchIndex = Input(UInt(CacheParams.indexBits.W))
+    val touchWay = Input(UInt(wayBits.W))
+  })
+
+  private val rank = RegInit(
+    VecInit(
+      Seq.fill(CacheParams.numSets)(
+        VecInit(Seq.tabulate(CacheParams.ways)(w => w.U(wayBits.W)))
+      )
+    )
+  )
+
+  // Vitima: a via de maior rank (exatamente uma, pois e permutacao).
+  private val current = rank(io.index)
+  io.lruWay := PriorityEncoder(
+    VecInit(current.map(_ === (CacheParams.ways - 1).U)).asUInt
+  )
+
+  when(io.touch) {
+    val old = rank(io.touchIndex)
+    val touchedRank = old(io.touchWay)
+    for (j <- 0 until CacheParams.ways) {
+      when(j.U === io.touchWay) {
+        rank(io.touchIndex)(j) := 0.U
+      }.elsewhen(old(j) < touchedRank) {
+        rank(io.touchIndex)(j) := old(j) + 1.U
+      }
+    }
+  }
+}
+
 /** Cache L1 unica (instanciada duas vezes: ICache e DCache).
   *
   * Config: 4-way set-associative, linha de 16B, write-back + write-allocate,
@@ -199,8 +255,10 @@ class CacheArrays extends Module {
   * (request/write/address/...) estavel, porque o controlador le o endereco
   * direto da porta durante todo o miss.
   *
-  * Pendente: escolha da vitima por LRU (hoje: primeira via invalida, senao
-  * via 0) e atualizacao do LRU nos hits.
+  * Reposicao: em miss, a vitima e a primeira via invalida do conjunto; se
+  * todas sao validas, a menos recentemente usada (CacheLru). O LRU e
+  * atualizado em todo hit; como o refill termina em sCompareTag, a linha
+  * recem-alocada tambem vira MRU pelo hit que atende o pedido.
   */
 class Cache(isInstructionCache: Boolean = false) extends Module {
   val io = IO(new Bundle {
@@ -245,6 +303,13 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   io.dbg.hitWay := hitWay
   io.dbg.hitDirty := hitLine.dirty
 
+  // ------------------------------------------------------------------- LRU
+  val lru = Module(new CacheLru)
+  lru.io.index := addr.index
+  lru.io.touch := false.B // a FSM liga em todo hit
+  lru.io.touchIndex := addr.index
+  lru.io.touchWay := hitWay
+
   // ------------------------------------------------- load: extracao de dado
   // Convencao de memSize (funct3[1:0] do RV32I): 0 = byte, 1 = half, 2 = word.
   val isByte = io.cpu.memSize === 0.U
@@ -267,8 +332,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   // ------------------------------------------------------- escolha de vitima
   val invalidWays = VecInit(setLines.map(l => !l.valid))
   val hasInvalid = invalidWays.asUInt.orR
-  // TODO(LRU): trocar o 0.U por via menos recentemente usada do conjunto.
-  val victimWay = Mux(hasInvalid, PriorityEncoder(invalidWays.asUInt), 0.U(wayBits.W))
+  val victimWay = Mux(hasInvalid, PriorityEncoder(invalidWays.asUInt), lru.io.lruWay)
   val victimWayLine = setLines(victimWay)
   val victimNeedsWriteBack = victimWayLine.valid && victimWayLine.dirty
 
@@ -301,6 +365,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
       }.elsewhen(tagHit) {
         io.cpu.hit := true.B
         io.cpu.readData := loadData
+        lru.io.touch := true.B // via de acerto passa a MRU
         state := sIdle
 
         if (!isInstructionCache) {
