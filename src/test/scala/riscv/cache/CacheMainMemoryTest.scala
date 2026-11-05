@@ -80,4 +80,40 @@ class CacheMainMemoryTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.iMem.ready.expect(true.B)
     }
   }
+
+  it should "nao aceitar endereco alem da capacidade nem deixar que ele retorne ao inicio" in {
+    test(
+      new CacheMainMemory(
+        depthWords = 8,
+        initialData = Seq(0x12345678L, 0x89ABCDEFL, 0x0BADF00DL, 0x55AA55AAL)
+      )
+    ) { dut =>
+      initialize(dut)
+      dut.io.dMem.request.poke(true.B)
+      dut.io.dMem.address.poke(32.U) // capacidade: 8 palavras = 32 bytes
+
+      dut.io.dMem.ready.expect(false.B)
+      dut.io.iMem.ready.expect(false.B)
+      // O pedido inválido não pode ser aceito nem retornar os dados do início.
+      dut.io.dMem.write.poke(true.B)
+      dut.io.dMem.writeLine(0).poke("hFFFFFFFF".U)
+      dut.io.dMem.writeLine(1).poke("hFFFFFFFF".U)
+      dut.io.dMem.writeLine(2).poke("hFFFFFFFF".U)
+      dut.io.dMem.writeLine(3).poke("hFFFFFFFF".U)
+      for (word <- 0 until CacheParams.wordsPerLine) {
+        dut.io.dMem.readLine(word).expect(0.U)
+      }
+      dut.clock.step(1)
+
+      dut.io.dMem.request.poke(false.B)
+      dut.io.dMem.write.poke(false.B)
+      dut.io.iMem.request.poke(true.B)
+      dut.io.iMem.address.poke(0.U)
+      dut.io.iMem.ready.expect(true.B)
+      dut.io.iMem.readLine(0).expect("h12345678".U)
+      dut.io.iMem.readLine(1).expect("h89ABCDEF".U)
+      dut.io.iMem.readLine(2).expect("h0BADF00D".U)
+      dut.io.iMem.readLine(3).expect("h55AA55AA".U)
+    }
+  }
 }
