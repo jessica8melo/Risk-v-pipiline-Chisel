@@ -441,13 +441,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
 
 /** L1 dividido em ICache + DCache, cada uma seguindo CacheParams.
   *
-  * Cada cache expoe sua propria porta de memoria (iMem/dMem). Como o design
-  * e bloqueante e single core, isso evita qualquer arbitragem por enquanto
-  * -- exatamente como o projeto ja faz hoje com InstructionMemory e
-  * DataMemory como modulos separados. Se no futuro as duas caches
-  * precisarem compartilhar um unico barramento fisico de memoria, um
-  * arbitro simples (prioridade fixa para a DCache, por exemplo) entra aqui
-  * na frente de iMem/dMem.
+  * As portas iMem/dMem podem ser conectadas a uma unica CacheMainMemory, que
+  * arbitra pedidos simultaneos e compartilha o armazenamento entre instrucoes
+  * e dados. O pipeline ainda precisa ser conectado separadamente a iCache/dCache.
   */
 class L1Cache extends Module {
   val io = IO(new Bundle {
