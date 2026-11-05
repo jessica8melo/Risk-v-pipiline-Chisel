@@ -32,6 +32,8 @@ trait CacheTestHelpers {
     dut.io.cpu.memSize.poke(2.U)
     dut.io.cpu.unsignedLoad.poke(false.B)
     dut.io.mem.ready.poke(false.B)
+    dut.io.flushDirty.poke(false.B)
+    dut.io.invalidateAll.poke(false.B)
     for (i <- 0 until W) dut.io.mem.readLine(i).poke(0.U)
   }
 

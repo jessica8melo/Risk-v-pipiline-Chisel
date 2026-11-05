@@ -76,6 +76,45 @@ class CacheFsmTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
     }
   }
 
+  it should "escrever de volta todas as linhas dirty durante flush de coerencia" in {
+    test(new Cache) { dut =>
+      initIO(dut)
+      val mem = new MemModel
+      val dirtyWord = BigInt(0xcafebabeL)
+      access(dut, mem, 0L, write = true, data = dirtyWord)
+      assert(mem.writes == 0)
+
+      dut.io.cpu.request.poke(false.B)
+      dut.io.flushDirty.poke(true.B)
+      var done = false
+      var cycles = 0
+      while (!done && cycles < CacheParams.numSets * CacheParams.ways * 4) {
+        val memoryRequest = dut.io.mem.request.peek().litToBoolean
+        if (memoryRequest && dut.io.mem.write.peek().litToBoolean) {
+          val lineAddress = dut.io.mem.address.peek().litValue
+          mem.lines(lineAddress) =
+            (0 until W).map(word => dut.io.mem.writeLine(word).peek().litValue)
+          mem.writes += 1
+        }
+        dut.io.mem.ready.poke(memoryRequest.B)
+        dut.clock.step(1)
+        done = dut.io.flushDone.peek().litToBoolean
+        cycles += 1
+      }
+
+      assert(done, "flush deve terminar após percorrer os conjuntos e vias")
+      assert(mem.writes == 1, s"somente a linha dirty deve gerar write-back: ${mem.writes}")
+      assert(mem.lines(BigInt(0))(0) == dirtyWord)
+
+      dut.io.flushDirty.poke(false.B)
+      dut.io.mem.ready.poke(false.B)
+      dut.clock.step(1)
+      val cleanHit = access(dut, mem, 0L)
+      assert(cleanHit.data == dirtyWord)
+      assert(!cleanHit.hitDirty, "a linha deve permanecer residente, mas limpa após flush")
+    }
+  }
+
   it should "tratar load/store de byte e half (extensao de sinal e merge)" in {
     test(new Cache) { dut =>
       initIO(dut)

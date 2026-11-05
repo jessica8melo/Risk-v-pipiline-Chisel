@@ -148,6 +148,7 @@ class CacheArrays extends Module {
     val readIndex = Input(UInt(CacheParams.indexBits.W))
     val read = Output(Vec(CacheParams.ways, new CacheLineRead))
     val write = Input(new CacheWritePort)
+    val invalidateAll = Input(Bool())
   })
 
   private val sets = CacheParams.numSets
@@ -177,6 +178,13 @@ class CacheArrays extends Module {
         validBits(w)(io.write.index) := io.write.valid
         dirtyBits(w)(io.write.index) := io.write.dirty
       }
+    }
+  }
+
+  when(io.invalidateAll) {
+    for (w <- 0 until CacheParams.ways; set <- 0 until sets) {
+      validBits(w)(set) := false.B
+      dirtyBits(w)(set) := false.B
     }
   }
 }
@@ -264,6 +272,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val io = IO(new Bundle {
     val cpu = Flipped(new CpuCacheIO)
     val mem = new CacheMemIO
+    val flushDirty = Input(Bool())
+    val flushDone = Output(Bool())
+    val invalidateAll = Input(Bool())
     // Observabilidade para testes (validos no ciclo em que hit = 1).
     val dbg = Output(new Bundle {
       val hitWay = UInt(log2Ceil(CacheParams.ways).W) // via em que a tag casou
@@ -273,13 +284,30 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
 
   private val wayBits = log2Ceil(CacheParams.ways)
 
+  private val states = Enum(7)
+  val sIdle = states(0)
+  val sCompareTag = states(1)
+  val sWriteBack = states(2)
+  val sAllocate = states(3)
+  val sFlushScan = states(4)
+  val sFlushWriteBack = states(5)
+  val sFlushDone = states(6)
+  val state = RegInit(sIdle)
+  val victimReg = RegInit(0.U(wayBits.W))
+  val flushSet = RegInit(0.U(CacheParams.indexBits.W))
+  val flushWay = RegInit(0.U(wayBits.W))
+  val flushTag = RegInit(0.U(CacheParams.tagBits.W))
+  val flushData = RegInit(VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W))))
+
   val addr = CacheAddress.fromUInt(io.cpu.address)
   val wordIdx = addr.offset(CacheParams.offsetBits - 1, 2)
   val byteOff = addr.offset(1, 0)
 
   // ---------------------------------------------------------------- arrays
   val arrays = Module(new CacheArrays)
-  arrays.io.readIndex := addr.index
+  val flushing = state === sFlushScan || state === sFlushWriteBack
+  arrays.io.readIndex := Mux(flushing, flushSet, addr.index)
+  arrays.io.invalidateAll := io.invalidateAll
   // porta de escrita ociosa por padrao; a FSM sobrescreve abaixo
   arrays.io.write.en := false.B
   arrays.io.write.way := 0.U
@@ -337,10 +365,10 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val victimNeedsWriteBack = victimWayLine.valid && victimWayLine.dirty
 
   // ------------------------------------------------------------------- FSM
-  val sIdle :: sCompareTag :: sWriteBack :: sAllocate :: Nil = Enum(4)
-  val state = RegInit(sIdle)
-  val victimReg = RegInit(0.U(wayBits.W))
   val victimLine = setLines(victimReg)
+  val flushDirtyWays = VecInit(setLines.map(line => line.valid && line.dirty))
+  val flushCandidateWay = PriorityEncoder(flushDirtyWays.asUInt)
+  val flushCandidate = setLines(flushCandidateWay)
 
   // Saidas padrao (Wire implicito: ultima atribuicao vence)
   io.cpu.hit := false.B
@@ -351,12 +379,19 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   io.mem.write := false.B
   io.mem.address := Cat(addr.tag, addr.index, 0.U(CacheParams.offsetBits.W))
   io.mem.writeLine := VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
+  io.flushDone := state === sFlushDone
 
   switch(state) {
     is(sIdle) {
       // pedido aceito, ainda nao atendido
-      io.cpu.stall := io.cpu.request
-      when(io.cpu.request) { state := sCompareTag }
+      io.cpu.stall := io.cpu.request || io.flushDirty
+      when(io.flushDirty) {
+        flushSet := 0.U
+        flushWay := 0.U
+        state := sFlushScan
+      }.elsewhen(io.cpu.request) {
+        state := sCompareTag
+      }
     }
 
     is(sCompareTag) {
@@ -416,6 +451,47 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         state := sCompareTag // reavalia: agora e hit (e trata o store, se for o caso)
       }
     }
+
+    is(sFlushScan) {
+      io.cpu.stall := true.B
+      when(flushDirtyWays.asUInt.orR) {
+        flushWay := flushCandidateWay
+        flushTag := flushCandidate.tag
+        flushData := flushCandidate.data
+        state := sFlushWriteBack
+      }.otherwise {
+        when(flushSet === (CacheParams.numSets - 1).U) {
+          state := sFlushDone
+        }.otherwise {
+          flushSet := flushSet + 1.U
+        }
+      }
+    }
+
+    is(sFlushWriteBack) {
+      io.cpu.stall := true.B
+      io.mem.request := true.B
+      io.mem.write := true.B
+      io.mem.address := Cat(flushTag, flushSet, 0.U(CacheParams.offsetBits.W))
+      io.mem.writeLine := flushData
+      when(io.mem.ready) {
+        arrays.io.write.en := true.B
+        arrays.io.write.way := flushWay
+        arrays.io.write.index := flushSet
+        arrays.io.write.wordMask := VecInit(Seq.fill(CacheParams.wordsPerLine)(false.B))
+        arrays.io.write.data := flushData
+        arrays.io.write.metaEn := true.B
+        arrays.io.write.tag := flushTag
+        arrays.io.write.valid := true.B
+        arrays.io.write.dirty := false.B
+        state := sFlushScan
+      }
+    }
+
+    is(sFlushDone) {
+      io.cpu.stall := io.cpu.request
+      when(!io.flushDirty) { state := sIdle }
+    }
   }
 
   // Acesso desalinhado nao e suportado: o merge/extracao trabalha dentro de uma
@@ -436,6 +512,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   if (isInstructionCache) {
     // ICache e somente leitura: a CPU nunca deve pedir escrita por essa porta.
     assert(!io.cpu.write, "ICache nao aceita escrita")
+    assert(!io.flushDirty, "ICache nao suporta flushDirty")
   }
 }
 
@@ -454,13 +531,42 @@ class L1Cache extends Module {
     // Cache -> Memoria principal
     val iMem = new CacheMemIO
     val dMem = new CacheMemIO
+
+    // FENCE.I: drena linhas sujas da DCache e invalida todas as linhas da ICache.
+    val fenceI = Input(Bool())
+    val fenceIDone = Output(Bool())
   })
 
   val instructionCache = Module(new Cache(isInstructionCache = true))
   val dataCache = Module(new Cache(isInstructionCache = false))
 
+  val fenceIdle :: fenceFlushData :: fenceInvalidateInstruction :: fenceComplete :: Nil = Enum(4)
+  val fenceState = RegInit(fenceIdle)
+  val fenceActive = fenceState =/= fenceIdle
+
+  instructionCache.io.flushDirty := false.B
+  instructionCache.io.invalidateAll := fenceState === fenceInvalidateInstruction
+  dataCache.io.flushDirty := fenceState === fenceFlushData
+  dataCache.io.invalidateAll := false.B
+  io.fenceIDone := fenceState === fenceComplete
+
+  switch(fenceState) {
+    is(fenceIdle) {
+      when(io.fenceI) { fenceState := fenceFlushData }
+    }
+    is(fenceFlushData) {
+      when(dataCache.io.flushDone) { fenceState := fenceInvalidateInstruction }
+    }
+    is(fenceInvalidateInstruction) {
+      fenceState := fenceComplete
+    }
+    is(fenceComplete) {
+      when(!io.fenceI) { fenceState := fenceIdle }
+    }
+  }
+
   // CPU <-> ICache
-  instructionCache.io.cpu.request := io.iCache.request
+  instructionCache.io.cpu.request := io.iCache.request && !fenceActive
   instructionCache.io.cpu.write := io.iCache.write
   instructionCache.io.cpu.address := io.iCache.address
   instructionCache.io.cpu.writeData := io.iCache.writeData
@@ -479,7 +585,7 @@ class L1Cache extends Module {
   instructionCache.io.mem.ready := io.iMem.ready
 
   // CPU <-> DCache
-  dataCache.io.cpu.request := io.dCache.request
+  dataCache.io.cpu.request := io.dCache.request && !fenceActive
   dataCache.io.cpu.write := io.dCache.write
   dataCache.io.cpu.address := io.dCache.address
   dataCache.io.cpu.writeData := io.dCache.writeData

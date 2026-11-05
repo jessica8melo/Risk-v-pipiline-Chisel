@@ -122,6 +122,7 @@ class Pipeline3(
   val flushPipeline = WireDefault(false.B)
   val cacheWait = WireDefault(false.B)
   val hazardStall = WireDefault(false.B)
+  val fenceIComplete = WireDefault(false.B)
   val exCanCommit = WireDefault(false.B)
   val cachedReadData = WireDefault(0.U(32.W))
 
@@ -158,7 +159,7 @@ class Pipeline3(
 
   clint.io.pc             := pcReg
   clint.io.instr          := ifIdInstr
-  clint.io.valid          := !stallPipeline && !flushPipeline
+  clint.io.valid          := !stallPipeline && !flushPipeline && !fenceIComplete
   clint.io.interrupt_flag := interrupt_flag
 
   // ============================================================
@@ -177,15 +178,19 @@ class Pipeline3(
   // ============================================================
   // 7. ESTÁGIO IF: busca de instrução pela ICache
   // ============================================================
-  l1Cache.io.iCache.request := !fetchDone
+  val fenceIRequest = idEx.valid && !idEx.signals.illegal && idEx.signals.isFenceI
+  l1Cache.io.fenceI := fenceIRequest
+
+  l1Cache.io.iCache.request := !fetchDone && !fenceIRequest
   l1Cache.io.iCache.write := false.B
   l1Cache.io.iCache.address := pcReg
   l1Cache.io.iCache.writeData := 0.U
   l1Cache.io.iCache.memSize := MemorySize.WORD
   l1Cache.io.iCache.unsignedLoad := false.B
 
-  val fetchReady = fetchDone || l1Cache.io.iCache.hit
+  val fetchReady = fenceIRequest || fetchDone || l1Cache.io.iCache.hit
   val fetchWait = !fetchReady
+  val fenceIWait = fenceIRequest && !l1Cache.io.fenceIDone
   val fetchedInstruction = Mux(fetchDone, fetchData, l1Cache.io.iCache.readData)
 
   // ============================================================
@@ -415,10 +420,11 @@ class Pipeline3(
   l1Cache.io.dCache.writeData := amoWriteData
 
   val dataWait = dataCacheRequest && !l1Cache.io.dCache.hit
-  cacheWait := fetchWait || dataWait
+  cacheWait := fetchWait || dataWait || fenceIWait
+  fenceIComplete := fenceIRequest && l1Cache.io.fenceIDone
   val takeRedirect = controlRedirect && !cacheWait && !hazardStall
   stallPipeline := cacheWait || hazardStall
-  flushPipeline := takeRedirect
+  flushPipeline := takeRedirect || fenceIComplete
   exCanCommit := !cacheWait
 
   // ============================================================
@@ -434,6 +440,11 @@ class Pipeline3(
   val pcNext = WireDefault(pcReg + 4.U)
   when(cacheWait || hazardStall) {
     pcNext := pcReg
+  }.elsewhen(fenceIComplete) {
+    // IF/ID pode conter uma instrução buscada antes da sincronização. Refaz o
+    // fetch a partir dela, agora que linhas dirty foram gravadas e a ICache
+    // foi invalidada.
+    pcNext := ifIdPc
   } .elsewhen(takeRedirect) {
     pcNext := redirectTarget
   }
@@ -463,6 +474,13 @@ class Pipeline3(
       fetchDone := true.B
       fetchData := l1Cache.io.iCache.readData
     }
+  } .elsewhen(fenceIComplete) {
+    lwWbValid := false.B
+    ifIdPc    := ifIdPc
+    ifIdInstr := nop
+    idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
+    fetchDone := false.B
+    dataAccessDone := false.B
   } .elsewhen(takeRedirect) {
     // FLUSH: insere NOP no IF/ID e limpa o ID/EX
     lwWbValid := false.B

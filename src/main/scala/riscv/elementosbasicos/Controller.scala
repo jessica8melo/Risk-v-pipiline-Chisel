@@ -19,6 +19,7 @@ class ControlSignals extends Bundle {
   val isLR = Bool()
   val isSC = Bool()
   val isAMO = Bool()
+  val isFenceI = Bool()
   val amoOp = UInt(4.W)
   val amoAq = Bool()
   val amoRl = Bool()
@@ -52,6 +53,7 @@ class Controller extends Module {
   io.signals.isLR := false.B
   io.signals.isSC := false.B
   io.signals.isAMO := false.B
+  io.signals.isFenceI := false.B
   io.signals.amoOp := AMOOp.ADD
   io.signals.amoAq := false.B
   io.signals.amoRl := false.B
@@ -188,6 +190,19 @@ class Controller extends Module {
       when(
         !(io.funct3 === "b000".U || io.funct3 === "b001".U || io.funct3 === "b010".U)
       ) {
+        illegal := true.B
+      }
+    }
+
+    is(Opcode.MISC_MEM) {
+      // FENCE e um no-op neste processador single-hart. FENCE.I aciona a
+      // sincronizacao write-back da DCache seguida da invalidacao da ICache.
+      when(io.funct3 === "b000".U) {
+        illegal := false.B
+      }.elsewhen(io.funct3 === "b001".U) {
+        illegal := false.B
+        io.signals.isFenceI := true.B
+      }.otherwise {
         illegal := true.B
       }
     }

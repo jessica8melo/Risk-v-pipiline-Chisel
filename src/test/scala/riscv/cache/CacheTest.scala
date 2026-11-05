@@ -81,6 +81,8 @@ class CacheTest extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.cpu.memSize.poke(0.U)
     dut.io.cpu.unsignedLoad.poke(false.B)
     dut.io.mem.ready.poke(false.B)
+    dut.io.flushDirty.poke(false.B)
+    dut.io.invalidateAll.poke(false.B)
     for (i <- 0 until CacheParams.wordsPerLine)
       dut.io.mem.readLine(i).poke(0.U)
   }
@@ -124,6 +126,7 @@ class CacheTest extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "L1Cache"
 
   private def idleL1(dut: L1Cache): Unit = {
+    dut.io.fenceI.poke(false.B)
     for (p <- Seq(dut.io.iCache, dut.io.dCache)) {
       p.request.poke(false.B)
       p.write.poke(false.B)

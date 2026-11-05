@@ -288,7 +288,7 @@ O modulo `Pipeline3` segue a organizacao didatica do capitulo 15:
 2. ID: decode, leitura do banco de registradores e geracao de imediato.
 3. EX/MEM/WB: ULA, branch/jump, acesso a memoria de dados e write-back.
 
-Ele ja possui forwarding simples do resultado do estagio EX para o decode e flush em branch/jump. Ainda nao implementa traps reais, CSRs, `FENCE`, `ECALL`, `EBREAK` nem politica final para acessos desalinhados.
+Ele possui forwarding, traps/CSRs, caches L1 separadas para instrucoes e dados, e uma memoria principal simulada compartilhada. Para codigo modificado em memoria, execute `FENCE.I`: o pipeline espera o write-back de todas as linhas dirty da DCache, invalida a ICache e refaz o fetch sequencial. `FENCE` comum e tratado como no-op no modelo single-hart; acessos desalinhados continuam sem suporte final.
 
 ## Erros comuns e como resolver
 

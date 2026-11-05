@@ -14,6 +14,9 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
       0x13L
   }
 
+  private def lui(rd: Int, upper20: Int): Long =
+    ((upper20 & 0xfffff).toLong << 12) | ((rd & 0x1f).toLong << 7) | 0x37L
+
   private def add(rd: Int, rs1: Int, rs2: Int): Long = {
     (0x00L << 25) |
       ((rs2 & 0x1f).toLong << 20) |
@@ -49,6 +52,23 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
       (0x2L << 12) |
       ((rd & 0x1f).toLong << 7) |
       0x2fL
+  }
+
+  private def jal(rd: Int, imm: Int): Long = {
+    val encoded = imm & 0x1fffff
+    (((encoded >> 20) & 1).toLong << 31) |
+      (((encoded >> 1) & 0x3ff).toLong << 21) |
+      (((encoded >> 11) & 1).toLong << 20) |
+      (((encoded >> 12) & 0xff).toLong << 12) |
+      ((rd & 0x1f).toLong << 7) |
+      0x6fL
+  }
+
+  private def jalr(rd: Int, rs1: Int, imm: Int): Long = {
+    ((imm & 0xfff).toLong << 20) |
+      ((rs1 & 0x1f).toLong << 15) |
+      ((rd & 0x1f).toLong << 7) |
+      0x67L
   }
 
   private def beq(rs1: Int, rs2: Int, imm: Int): Long = {
@@ -183,6 +203,40 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
       assert(writes.get(5).contains(BigInt(5)), s"segundo LR deveria ler 5: $writes")
       assert(writes.get(6).contains(BigInt(5)), s"AMOADD deveria retornar valor antigo 5: $writes")
       assert(writes.get(7).contains(BigInt(8)), s"LR final deveria ler 8: $writes")
+    }
+  }
+
+  it should "sincronizar instrucoes modificadas pela DCache com FENCE.I" in {
+    val nop = 0x00000013L
+    val replacement = addi(3, 0, 42)
+    val program = Seq(
+      jal(5, 40),                  // pré-carrega a linha de código modificável
+      addi(1, 0, 40),              // x1 aponta para a instrução-alvo
+      lui(2, (replacement >> 12).toInt),
+      addi(2, 2, (replacement & 0xfff).toInt),
+      sw(2, 1, 0),                 // escreve os novos bits na DCache
+      0x0000100fL,                 // fence.i
+      jalr(0, 1, 0),               // volta à instrução modificada
+      nop,
+      nop,
+      nop,
+      nop,
+      jalr(0, 5, 0)                // instrução antiga em 0x28: retorna ao patcher
+    )
+
+    test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
+      var sawUpdatedInstruction = false
+      var cycles = 0
+      while (!sawUpdatedInstruction && cycles < 300) {
+        if (dut.io.writebackEnable.peekBoolean() && dut.io.writebackRd.peekInt() == 3 &&
+            dut.io.writebackData.peekInt() == 42) {
+          sawUpdatedInstruction = true
+        }
+        dut.clock.step(1)
+        cycles += 1
+      }
+
+      assert(sawUpdatedInstruction, "FENCE.I deveria fazer executar a instrução nova (addi x3, x0, 42)")
     }
   }
 }
