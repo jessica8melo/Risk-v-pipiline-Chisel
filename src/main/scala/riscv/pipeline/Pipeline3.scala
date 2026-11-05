@@ -121,6 +121,7 @@ class Pipeline3(
   val stallPipeline = WireDefault(false.B)
   val flushPipeline = WireDefault(false.B)
   val cacheWait = WireDefault(false.B)
+  val hazardStall = WireDefault(false.B)
   val exCanCommit = WireDefault(false.B)
   val cachedReadData = WireDefault(0.U(32.W))
 
@@ -255,6 +256,7 @@ class Pipeline3(
                    !idEx.signals.jalr
   val loadUseHazard = isLoadInEx && currentUsesRd
   val hazardDetected = loadUseHazard
+  hazardStall := hazardDetected && !cacheWait
 
   // ============================================================
   // 11. EXTENSÃO A: LR/SC e AMOs
@@ -313,7 +315,8 @@ class Pipeline3(
 
   // 12b. Writeback enable/rd
   val writebackEnable =
-    (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite && exCanCommit) || lwWbValid
+    (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite && exCanCommit &&
+      !hazardStall) || lwWbValid
   val writebackRd     = Mux(lwWbValid, lwWbRd, idEx.rd)
 
   // 12c. CSR forwarding
@@ -325,12 +328,12 @@ class Pipeline3(
 
   // 12d. Forwarding de registradores (EX -> ID)
   val forwardedRs1 = Mux(
-    writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs1,
+    writebackEnable && writebackRd =/= 0.U && writebackRd === idRs1,
     writebackData,
     regFile.io.readData1
   )
   val forwardedRs2 = Mux(
-    writebackEnable && idEx.rd =/= 0.U && idEx.rd === idRs2,
+    writebackEnable && writebackRd =/= 0.U && writebackRd === idRs2,
     writebackData,
     regFile.io.readData2
   )
@@ -413,7 +416,6 @@ class Pipeline3(
 
   val dataWait = dataCacheRequest && !l1Cache.io.dCache.hit
   cacheWait := fetchWait || dataWait
-  val hazardStall = hazardDetected && !cacheWait
   val takeRedirect = controlRedirect && !cacheWait && !hazardStall
   stallPipeline := cacheWait || hazardStall
   flushPipeline := takeRedirect

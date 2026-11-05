@@ -128,10 +128,13 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
     test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
       var loadedValue: Option[BigInt] = None
       var dependentValue: Option[BigInt] = None
+      var loadWritebackEvents = 0
       var cycles = 0
       while ((loadedValue.isEmpty || dependentValue.isEmpty) && cycles < 80) {
         if (dut.io.writebackEnable.peekBoolean()) {
-          dut.io.writebackRd.peekInt().toInt match {
+          val rd = dut.io.writebackRd.peekInt().toInt
+          if (rd == 3) loadWritebackEvents += 1
+          rd match {
             case 3 => loadedValue = Some(dut.io.writebackData.peekInt())
             case 4 => dependentValue = Some(dut.io.writebackData.peekInt())
             case _ =>
@@ -143,6 +146,7 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
 
       assert(loadedValue.contains(42), s"lw deveria retornar 42, observado: $loadedValue")
       assert(dependentValue.contains(43), s"load-use deveria produzir 43, observado: $dependentValue")
+      assert(loadWritebackEvents == 1, s"lw deveria gerar exatamente um writeback: $loadWritebackEvents")
     }
   }
 
