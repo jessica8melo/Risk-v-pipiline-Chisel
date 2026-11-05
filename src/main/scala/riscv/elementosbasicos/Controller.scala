@@ -263,6 +263,15 @@ class Controller extends Module {
     }
 
     is(Opcode.ATOMIC) {
+      val atomicFunct5Valido =
+        amoFunct5 === AMOFunct5.LR || amoFunct5 === AMOFunct5.SC ||
+          amoFunct5 === AMOFunct5.SWAP || amoFunct5 === AMOFunct5.ADD ||
+          amoFunct5 === AMOFunct5.AND || amoFunct5 === AMOFunct5.OR ||
+          amoFunct5 === AMOFunct5.XOR || amoFunct5 === AMOFunct5.MAX ||
+          amoFunct5 === AMOFunct5.MIN || amoFunct5 === AMOFunct5.MAXU ||
+          amoFunct5 === AMOFunct5.MINU
+      illegal := !atomicFunct5Valido || io.funct3 =/= "b010".U
+
       switch(amoFunct5) {
         is("b00010".U) {  // funct7 = 0b00010 (0x02)
           io.signals.isLR := true.B
@@ -302,6 +311,14 @@ class Controller extends Module {
         is("b10000".U) { io.signals.amoOp := AMOOp.MIN }   // 0x10
         is("b10110".U) { io.signals.amoOp := AMOOp.MAXU }  // 0x16
         is("b10010".U) { io.signals.amoOp := AMOOp.MINU }  // 0x12
+      }
+
+      when(
+        atomicFunct5Valido &&
+          amoFunct5 =/= AMOFunct5.LR &&
+          amoFunct5 =/= AMOFunct5.SC
+      ) {
+        io.signals.isAMO := true.B
       }
 
       when(io.signals.isAMO) {

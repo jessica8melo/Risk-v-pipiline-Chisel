@@ -3,6 +3,7 @@ package riscv.pipeline
 import chisel3._
 import chisel3.util._
 import riscv.elementosbasicos._
+import riscv.cache._
 import riscv._
 
 // ============================================================
@@ -29,12 +30,12 @@ class DecodeExecuteBundle extends Bundle {
 /** Pipeline RV32I educacional de 3 estágios, inspirado no Wildcat.
   *
   * Estágios:
-  *   - IF:       busca de instrução (instrMem + pcReg)
+  *   - IF:       busca de instrução pela ICache
   *   - ID/RF:    decodificação, leitura do banco de registradores e preparação
   *   - EX/MEM/WB: execução (ULA), acesso à memória e writeback
   *
   * Características:
-  *   - memórias de instrução e dados internas;
+  *   - ICache/DCache ligadas a uma memória principal simulada compartilhada;
   *   - forwarding do resultado do estágio EX para o ID;
   *   - stall de um ciclo para load-use hazard (com registrador de WB);
   *   - suporte a CSRs, CLINT e extensão A (LR/SC e AMOs).
@@ -76,11 +77,14 @@ class Pipeline3(
   // ============================================================
   // 1. INSTANCIAÇÃO DOS MÓDULOS
   // ============================================================
-  val instrMem   = Module(new InstructionMemory(
-                     depthWords = memoryWords,
-                     initialData = initialProgram,
-                     programFile = programFile))
-  val dataMem    = Module(new DataMemory(depthWords = memoryWords))
+  val l1Cache    = Module(new L1Cache)
+  val mainMemory = Module(new CacheMainMemory(
+    depthWords = memoryWords,
+    initialData = initialProgram,
+    programFile = programFile
+  ))
+  l1Cache.io.iMem <> mainMemory.io.iMem
+  l1Cache.io.dMem <> mainMemory.io.dMem
   val regFile    = Module(new RegisterFile)
   val immGen     = Module(new ImmGen)
   val controller = Module(new Controller)
@@ -101,6 +105,12 @@ class Pipeline3(
   val lwWbRd    = RegInit(0.U(5.W))
   val lwWbData  = RegInit(0.U(32.W))
 
+  // Respostas das caches concluidas enquanto o restante do pipeline aguardava.
+  val fetchDone = RegInit(false.B)
+  val fetchData = RegInit(nop)
+  val dataAccessDone = RegInit(false.B)
+  val dataAccessData = RegInit(0.U(32.W))
+
   // Mecanismo de reserva para LR/SC
   val reservationAddr  = RegInit(0.U(32.W))
   val reservationValid = RegInit(false.B)
@@ -110,6 +120,9 @@ class Pipeline3(
   // ============================================================
   val stallPipeline = WireDefault(false.B)
   val flushPipeline = WireDefault(false.B)
+  val cacheWait = WireDefault(false.B)
+  val exCanCommit = WireDefault(false.B)
+  val cachedReadData = WireDefault(0.U(32.W))
 
   // ============================================================
   // 4. CONEXÃO CLINT <-> CSR
@@ -161,9 +174,18 @@ class Pipeline3(
   csr.io.clint_sstatus_write := clint.io.sstatus_write_data
 
   // ============================================================
-  // 7. ESTÁGIO IF: busca de instrução
+  // 7. ESTÁGIO IF: busca de instrução pela ICache
   // ============================================================
-  instrMem.io.address := pcReg
+  l1Cache.io.iCache.request := !fetchDone
+  l1Cache.io.iCache.write := false.B
+  l1Cache.io.iCache.address := pcReg
+  l1Cache.io.iCache.writeData := 0.U
+  l1Cache.io.iCache.memSize := MemorySize.WORD
+  l1Cache.io.iCache.unsignedLoad := false.B
+
+  val fetchReady = fetchDone || l1Cache.io.iCache.hit
+  val fetchWait = !fetchReady
+  val fetchedInstruction = Mux(fetchDone, fetchData, l1Cache.io.iCache.readData)
 
   // ============================================================
   // 8. ESTÁGIO ID: decodificação e leitura do banco de registradores
@@ -234,36 +256,37 @@ class Pipeline3(
   val loadUseHazard = isLoadInEx && currentUsesRd
   val hazardDetected = loadUseHazard
 
-  stallPipeline := hazardDetected
-  flushPipeline := controlRedirect
-
   // ============================================================
   // 11. EXTENSÃO A: LR/SC e AMOs
   // ============================================================
   val isLR  = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
   val isSC  = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
   val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
+  val scHasReservation = reservationValid && (reservationAddr === idEx.memAddress)
 
   // LR: estabelece reserva
-  when(isLR) {
+  when(isLR && exCanCommit) {
     reservationAddr  := idEx.memAddress
     reservationValid := true.B
   }
 
   // SC: verifica e escreve condicionalmente
   val scSuccess = WireDefault(false.B)
-  when(isSC) {
+  when(isSC && exCanCommit) {
     scSuccess := reservationValid && (reservationAddr === idEx.memAddress)
     reservationValid := false.B
   }
 
   // AMO: invalida reserva
-  when(isAMO) {
+  when(isAMO && exCanCommit) {
     reservationValid := false.B
   }
 
   // Qualquer escrita no endereço reservado invalida a reserva
-  when(dataMem.io.writeEnable && (idEx.memAddress === reservationAddr)) {
+  when(
+    l1Cache.io.dCache.hit && idEx.signals.memWrite &&
+      (idEx.memAddress === reservationAddr)
+  ) {
     reservationValid := false.B
   }
 
@@ -278,18 +301,19 @@ class Pipeline3(
   // 12a. Writeback data (prioridade: lwWb > writebackSel > ULA)
   val writebackData = WireDefault(ula.io.result)
   switch(idEx.signals.writebackSel) {
-    is(WritebackSel.MEM) { writebackData := dataMem.io.readData }
+    is(WritebackSel.MEM) { writebackData := cachedReadData }
     is(WritebackSel.PC4) { writebackData := idEx.pc + 4.U }
     is(WritebackSel.IMM) { writebackData := idEx.imm }
     is(WritebackSel.CSR) { writebackData := idEx.csrReadData }
   }
-  when(isLR)  { writebackData := dataMem.io.readData }
+  when(isLR)  { writebackData := cachedReadData }
   when(isSC)  { writebackData := Mux(scSuccess, 0.U, 1.U) }
-  when(isAMO) { writebackData := dataMem.io.readData }
+  when(isAMO) { writebackData := cachedReadData }
   when(lwWbValid) { writebackData := lwWbData }
 
   // 12b. Writeback enable/rd
-  val writebackEnable = (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite) || lwWbValid
+  val writebackEnable =
+    (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite && exCanCommit) || lwWbValid
   val writebackRd     = Mux(lwWbValid, lwWbRd, idEx.rd)
 
   // 12c. CSR forwarding
@@ -333,20 +357,67 @@ class Pipeline3(
     is(7.U) { csrWriteData := csrReadData & ~csrSrc }
   }
 
-  csr.io.cpu_write_enable  := idEx.valid && !idEx.signals.illegal &&
+  csr.io.cpu_write_enable  := idEx.valid && !idEx.signals.illegal && exCanCommit &&
                               idEx.signals.csrWrite &&
                               !clint.io.direct_write_enable
   csr.io.cpu_write_address := idEx.csrAddress
   csr.io.cpu_write_data    := idEx.csrWriteData
 
   // ============================================================
-  // 14. ACESSO À MEMÓRIA
+  // 14. ACESSO À DCache E HANDSHAKE DAS CACHES
   // ============================================================
-  dataMem.io.address     := idEx.memAddress
-  dataMem.io.writeData   := idEx.memWriteData
-  dataMem.io.writeEnable := idEx.valid && !idEx.signals.illegal && idEx.signals.memWrite
-  dataMem.io.memSize     := idEx.signals.memSize
-  dataMem.io.unsignedLoad := idEx.signals.memUnsigned
+  val dataAccess = idEx.valid && !idEx.signals.illegal &&
+    (idEx.signals.memWrite || idEx.signals.writebackSel === WritebackSel.MEM) &&
+    (!isSC || scHasReservation)
+  val dataCacheRequest = dataAccess && !dataAccessDone
+
+  l1Cache.io.dCache.request := dataCacheRequest
+  l1Cache.io.dCache.write := idEx.signals.memWrite && (!isSC || scHasReservation)
+  l1Cache.io.dCache.address := idEx.memAddress
+  l1Cache.io.dCache.memSize := idEx.signals.memSize
+  l1Cache.io.dCache.unsignedLoad := idEx.signals.memUnsigned
+
+  cachedReadData := Mux(dataAccessDone, dataAccessData, l1Cache.io.dCache.readData)
+
+  val amoWriteData = WireDefault(idEx.memWriteData)
+  when(isAMO) {
+    switch(idEx.signals.amoOp) {
+      is(AMOOp.SWAP) { amoWriteData := idEx.memWriteData }
+      is(AMOOp.ADD)  { amoWriteData := cachedReadData + idEx.memWriteData }
+      is(AMOOp.AND)  { amoWriteData := cachedReadData & idEx.memWriteData }
+      is(AMOOp.OR)   { amoWriteData := cachedReadData | idEx.memWriteData }
+      is(AMOOp.XOR)  { amoWriteData := cachedReadData ^ idEx.memWriteData }
+      is(AMOOp.MAX) {
+        amoWriteData := Mux(
+          cachedReadData.asSInt > idEx.memWriteData.asSInt,
+          cachedReadData,
+          idEx.memWriteData
+        )
+      }
+      is(AMOOp.MIN) {
+        amoWriteData := Mux(
+          cachedReadData.asSInt < idEx.memWriteData.asSInt,
+          cachedReadData,
+          idEx.memWriteData
+        )
+      }
+      is(AMOOp.MAXU) {
+        amoWriteData := Mux(cachedReadData > idEx.memWriteData, cachedReadData, idEx.memWriteData)
+      }
+      is(AMOOp.MINU) {
+        amoWriteData := Mux(cachedReadData < idEx.memWriteData, cachedReadData, idEx.memWriteData)
+      }
+    }
+  }
+  l1Cache.io.dCache.writeData := amoWriteData
+
+  val dataWait = dataCacheRequest && !l1Cache.io.dCache.hit
+  cacheWait := fetchWait || dataWait
+  val hazardStall = hazardDetected && !cacheWait
+  val takeRedirect = controlRedirect && !cacheWait && !hazardStall
+  stallPipeline := cacheWait || hazardStall
+  flushPipeline := takeRedirect
+  exCanCommit := !cacheWait
 
   // ============================================================
   // 15. CONEXÃO AO BANCO DE REGISTRADORES (writeback)
@@ -359,31 +430,52 @@ class Pipeline3(
   // 16. ATUALIZAÇÃO DOS REGISTRADORES DE PIPELINE
   // ============================================================
   val pcNext = WireDefault(pcReg + 4.U)
-  when(stallPipeline) {
+  when(cacheWait || hazardStall) {
     pcNext := pcReg
-  } .elsewhen(controlRedirect) {
+  } .elsewhen(takeRedirect) {
     pcNext := redirectTarget
   }
 
   pcReg := pcNext
 
-  when(stallPipeline) {
-    // STALL: IF/ID congelados, lw avança para o registrador de WB
+  when(cacheWait) {
+    // Miss de cache: congela o pipeline e guarda respostas que chegarem antes
+    // da outra cache, evitando repetir fetches ou stores ja atendidos.
+    lwWbValid := false.B
+    when(!fetchDone && l1Cache.io.iCache.hit) {
+      fetchDone := true.B
+      fetchData := l1Cache.io.iCache.readData
+    }
+    when(dataCacheRequest && l1Cache.io.dCache.hit) {
+      dataAccessDone := true.B
+      dataAccessData := l1Cache.io.dCache.readData
+    }
+  } .elsewhen(hazardStall) {
+    // Load-use: a leitura ja foi atendida; grava o valor e injeta uma bolha.
     lwWbValid := true.B
     lwWbRd    := idEx.rd
-    lwWbData  := dataMem.io.readData
+    lwWbData  := cachedReadData
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
-  } .elsewhen(flushPipeline || controlRedirect) {
+    dataAccessDone := false.B
+    when(!fetchDone && l1Cache.io.iCache.hit) {
+      fetchDone := true.B
+      fetchData := l1Cache.io.iCache.readData
+    }
+  } .elsewhen(takeRedirect) {
     // FLUSH: insere NOP no IF/ID e limpa o ID/EX
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := nop
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
+    fetchDone := false.B
+    dataAccessDone := false.B
   } .otherwise {
     // ATUALIZAÇÃO NORMAL
     lwWbValid := false.B
     ifIdPc    := pcReg
-    ifIdInstr := instrMem.io.readData
+    ifIdInstr := fetchedInstruction
+    fetchDone := false.B
+    dataAccessDone := false.B
 
     idEx.valid        := true.B
     idEx.pc           := ifIdPc
