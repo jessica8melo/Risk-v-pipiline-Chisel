@@ -157,9 +157,16 @@ class Pipeline3(
     interrupt_flag := InterruptCode.Timer0
   }
 
-  clint.io.pc             := pcReg
-  clint.io.instr          := ifIdInstr
-  clint.io.valid          := !stallPipeline && !flushPipeline && !fenceIComplete
+  // ECALL/EBREAK/MRET/SRET sao resolvidos no EX (ver secao 9c): o CLINT
+  // recebe PC e instrucao do EX e `valid` fica alto por UM unico ciclo, o
+  // ciclo em que a trap/retorno e tomado (ele dispara a escrita nos CSRs).
+  val sysInstrInEx = idEx.valid && !idEx.signals.illegal
+  val exIsEcallEbreak = sysInstrInEx && (idEx.instr === ECALL || idEx.instr === EBREAK)
+  val exIsXret        = sysInstrInEx && (idEx.instr === MRET || idEx.instr === SRET)
+  val takeSys         = (exIsEcallEbreak || exIsXret) && !cacheWait
+  clint.io.pc             := idEx.pc
+  clint.io.instr          := idEx.instr
+  clint.io.valid          := takeSys
   clint.io.interrupt_flag := interrupt_flag
 
   // ============================================================
@@ -282,8 +289,14 @@ class Pipeline3(
   clint.io.exc_cause := Mux(exIsStore, 6.U(31.W), 4.U(31.W))
   clint.io.exc_pc    := idEx.pc
   clint.io.exc_tval  := idEx.memAddress
-  // Vetor de excecao: sempre o endereco base (bits de MODE de mtvec/stvec ignorados).
-  val trapTarget = clint.io.trap_address & "hFFFFFFFC".U(32.W)
+  // Destino da trap: excecoes usam o endereco base de mtvec/stvec (bits de MODE
+  // ignorados); MRET/SRET usam mepc/sepc (bit 0 ignorado, RVC permite PC par).
+  val trapTarget = Mux(
+    takeSys && exIsXret,
+    clint.io.trap_address & "hFFFFFFFE".U(32.W),
+    clint.io.trap_address & "hFFFFFFFC".U(32.W)
+  )
+  val takeAnyTrap = takeTrap || takeSys
 
   // ============================================================
   // 10. HAZARD DETECTION (load-use)
@@ -465,7 +478,7 @@ class Pipeline3(
   fenceIComplete := fenceIRequest && l1Cache.io.fenceIDone
   val takeRedirect = controlRedirect && !cacheWait && !hazardStall
   stallPipeline := cacheWait || hazardStall
-  flushPipeline := takeRedirect || fenceIComplete || takeTrap
+  flushPipeline := takeRedirect || fenceIComplete || takeAnyTrap
   exCanCommit := !cacheWait && !misalignTrap
 
   // ============================================================
@@ -486,7 +499,7 @@ class Pipeline3(
     // fetch a partir dela, agora que linhas dirty foram gravadas e a ICache
     // foi invalidada.
     pcNext := ifIdPc
-  } .elsewhen(takeTrap) {
+  } .elsewhen(takeAnyTrap) {
     pcNext := trapTarget
   } .elsewhen(takeRedirect) {
     pcNext := redirectTarget
@@ -524,7 +537,7 @@ class Pipeline3(
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
     fetchDone := false.B
     dataAccessDone := false.B
-  } .elsewhen(takeRedirect || takeTrap) {
+  } .elsewhen(takeRedirect || takeAnyTrap) {
     // FLUSH (desvio tomado ou trap de acesso desalinhado): insere NOP no IF/ID e limpa o ID/EX
     lwWbValid := false.B
     ifIdPc    := pcReg

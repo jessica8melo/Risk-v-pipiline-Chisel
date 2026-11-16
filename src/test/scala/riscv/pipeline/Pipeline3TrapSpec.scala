@@ -147,6 +147,9 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       NOP,                    // 0x18
       NOP,                    // 0x1C
       addi(5, 0, 5),          // 0x20: handler: x5 = 5
+      csrrs(30, 0x341, 0),    // handler: x30 = mepc (PC do ECALL/EBREAK)
+      addi(30, 30, 4),        // mepc + 4: retorna para a instrucao seguinte
+      csrrw(0, 0x341, 30),    // mepc = mepc + 4
       MRET,                   // 0x24: retorna para 0x10
       NOP,                    // 0x28
     )
@@ -200,6 +203,9 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       NOP,                    // 0x1C
       addi(5, 0, 5),          // 0x20: handler
       csrrs(6, 0x300, 0),     // 0x24: x6 = mstatus
+      csrrs(30, 0x341, 0),    // handler: x30 = mepc (PC do ECALL/EBREAK)
+      addi(30, 30, 4),        // mepc + 4: retorna para a instrucao seguinte
+      csrrw(0, 0x341, 30),    // mepc = mepc + 4
       MRET,                   // 0x28
       NOP,                    // 0x2C
     )
@@ -254,6 +260,9 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       NOP,                    // 0x1C
       addi(5, 0, 5),          // 0x20
       csrrs(6, 0x300, 0),     // 0x24: x6 = mstatus
+      csrrs(30, 0x341, 0),    // handler: x30 = mepc (PC do ECALL/EBREAK)
+      addi(30, 30, 4),        // mepc + 4: retorna para a instrucao seguinte
+      csrrw(0, 0x341, 30),    // mepc = mepc + 4
       MRET,                   // 0x28
       NOP,                    // 0x2C
     )
@@ -328,6 +337,9 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       NOP,                    // 0x18
       NOP,                    // 0x1C
       addi(5, 0, 5),          // 0x20: handler
+      csrrs(30, 0x341, 0),    // handler: x30 = mepc (PC do ECALL/EBREAK)
+      addi(30, 30, 4),        // mepc + 4: retorna para a instrucao seguinte
+      csrrw(0, 0x341, 30),    // mepc = mepc + 4
       MRET,                   // 0x24
       NOP,                    // 0x28
     )
