@@ -248,11 +248,50 @@ class Pipeline3(
   val redirectTarget = Mux(idEx.signals.jalr, jalrTarget, pcRelativeTarget)
 
   // ============================================================
+  // 9b. TRAP DE ACESSO DESALINHADO (detectado no EX, ANTES da DCache)
+  // ============================================================
+  // Politica: sem suporte por hardware. Acessos desalinhados geram excecao
+  // sincrona precisa (a instrucao nao tem efeito arquitetural):
+  //   - load / LR.W                 -> mcause 4 (load address misaligned)
+  //   - store / SC.W / AMO          -> mcause 6 (store/AMO address misaligned)
+  //   - mtval = endereco efetivo que falhou; mepc = PC da instrucao.
+  // LR/SC/AMO sao sempre de palavra (exigem alinhamento natural de 4 bytes);
+  // SC desalinhado gera trap mesmo sem reserva (a checagem vem antes).
+  val exIsLR  = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
+  val exIsSC  = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
+  val exIsAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
+  val exIsAtomic = exIsLR || exIsSC || exIsAMO
+  val exIsStore  = exIsSC || exIsAMO || (idEx.signals.memWrite && !exIsAtomic)
+  val exMemAccess = idEx.valid && !idEx.signals.illegal &&
+    (idEx.signals.memWrite || idEx.signals.writebackSel === WritebackSel.MEM || exIsAtomic)
+
+  val exAccessSize = Mux(exIsAtomic, MemorySize.WORD, idEx.signals.memSize)
+  val exAddrLow = idEx.memAddress(1, 0)
+  val exMisaligned = MuxLookup(exAccessSize, false.B)(
+    Seq(
+      MemorySize.HALF -> exAddrLow(0),
+      MemorySize.WORD -> (exAddrLow =/= 0.U)
+    )
+  )
+  val misalignTrap = exMemAccess && exMisaligned
+  // Como o redirecionamento de desvios, a trap so e tomada quando nao ha
+  // espera de cache (evita mudar pcReg no meio de um miss da ICache).
+  val takeTrap = misalignTrap && !cacheWait
+
+  clint.io.exc_valid := takeTrap
+  clint.io.exc_cause := Mux(exIsStore, 6.U(31.W), 4.U(31.W))
+  clint.io.exc_pc    := idEx.pc
+  clint.io.exc_tval  := idEx.memAddress
+  // Vetor de excecao: sempre o endereco base (bits de MODE de mtvec/stvec ignorados).
+  val trapTarget = clint.io.trap_address & "hFFFFFFFC".U(32.W)
+
+  // ============================================================
   // 10. HAZARD DETECTION (load-use)
   // ============================================================
   val currentUsesRd = (idRs1 === idEx.rd && idRs1 =/= 0.U) ||
                       (idRs2 === idEx.rd && idRs2 =/= 0.U)
   val isLoadInEx = idEx.valid &&
+                   !misalignTrap &&
                    !idEx.signals.illegal &&
                    idEx.signals.writebackSel === WritebackSel.MEM &&
                    !idEx.signals.memWrite &&
@@ -377,7 +416,8 @@ class Pipeline3(
   // ============================================================
   val dataAccess = idEx.valid && !idEx.signals.illegal &&
     (idEx.signals.memWrite || idEx.signals.writebackSel === WritebackSel.MEM) &&
-    (!isSC || scHasReservation)
+    (!isSC || scHasReservation) &&
+    !misalignTrap
   val dataCacheRequest = dataAccess && !dataAccessDone
 
   l1Cache.io.dCache.request := dataCacheRequest
@@ -425,8 +465,8 @@ class Pipeline3(
   fenceIComplete := fenceIRequest && l1Cache.io.fenceIDone
   val takeRedirect = controlRedirect && !cacheWait && !hazardStall
   stallPipeline := cacheWait || hazardStall
-  flushPipeline := takeRedirect || fenceIComplete
-  exCanCommit := !cacheWait
+  flushPipeline := takeRedirect || fenceIComplete || takeTrap
+  exCanCommit := !cacheWait && !misalignTrap
 
   // ============================================================
   // 15. CONEXÃO AO BANCO DE REGISTRADORES (writeback)
@@ -446,6 +486,8 @@ class Pipeline3(
     // fetch a partir dela, agora que linhas dirty foram gravadas e a ICache
     // foi invalidada.
     pcNext := ifIdPc
+  } .elsewhen(takeTrap) {
+    pcNext := trapTarget
   } .elsewhen(takeRedirect) {
     pcNext := redirectTarget
   }
@@ -482,8 +524,8 @@ class Pipeline3(
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
     fetchDone := false.B
     dataAccessDone := false.B
-  } .elsewhen(takeRedirect) {
-    // FLUSH: insere NOP no IF/ID e limpa o ID/EX
+  } .elsewhen(takeRedirect || takeTrap) {
+    // FLUSH (desvio tomado ou trap de acesso desalinhado): insere NOP no IF/ID e limpa o ID/EX
     lwWbValid := false.B
     ifIdPc    := pcReg
     ifIdInstr := nop

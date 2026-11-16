@@ -41,6 +41,15 @@ class CLINTInterface extends Bundle {
   
   // ENTRADAS: INTERRUPÇÕES
   val interrupt_flag = Input(UInt(8.W))
+
+  // ENTRADAS: EXCEÇÃO SÍNCRONA DETECTADA PELO PIPELINE (ex.: acesso desalinhado)
+  // exc_valid deve ficar alto por UM ciclo (o ciclo em que a trap é tomada),
+  // pois ele dispara a escrita nos CSRs. exc_pc é o PC da instrução que
+  // falhou (vai para mepc/sepc) e exc_tval o valor de mtval/stval.
+  val exc_valid = Input(Bool())
+  val exc_cause = Input(UInt(31.W))
+  val exc_pc    = Input(UInt(32.W))
+  val exc_tval  = Input(UInt(32.W))
   
   // SAÍDAS: ESCRITA NOS CSRs
   // M-Mode
@@ -129,6 +138,8 @@ class CLINT extends Module {
     exception_code := MuxLookup(io.interrupt_flag, 11.U(31.W))(
       Seq(InterruptCode.Timer0 -> 5.U(31.W))  // Supervisor Timer Interrupt
     )
+  } .elsewhen(io.exc_valid) {
+    exception_code := io.exc_cause
   } .elsewhen(io.valid && io.instr === EBREAK) {
     exception_code := 3.U(31.W)   // Breakpoint
   } .elsewhen(io.valid && io.instr === ECALL) {
@@ -218,7 +229,11 @@ class CLINT extends Module {
   
   // 5. EXCEÇÃO (ECALL/EBREAK)
   
-  } .elsewhen(io.valid && (io.instr === ECALL || io.instr === EBREAK)) {
+  } .elsewhen(io.exc_valid || (io.valid && (io.instr === ECALL || io.instr === EBREAK))) {
+    // Exceção síncrona vinda do pipeline (exc_valid) tem prioridade sobre
+    // ECALL/EBREAK do ID: é de uma instrução mais antiga.
+    val trapPc   = Mux(io.exc_valid, io.exc_pc, io.pc)
+    val trapTval = Mux(io.exc_valid, io.exc_tval, 0.U(32.W))
     trap_assert_internal := true.B
     trap_to_smode_internal := delegate_to_smode
     
@@ -235,9 +250,9 @@ class CLINT extends Module {
         0.U(1.W),
         io.sstatus(0, 0)
       )
-      io.sepc_write_data := io.pc
+      io.sepc_write_data := trapPc
       io.scause_write_data := Cat(0.U(1.W), exception_code)
-      io.stval_write_data := 0.U
+      io.stval_write_data := trapTval
       
       io.mstatus_write_data := io.mstatus
       io.mepc_write_data := io.mepc
@@ -258,8 +273,9 @@ class CLINT extends Module {
         0.U(1.W),
         io.mstatus(2, 0)
       )
-      io.mepc_write_data := io.pc
+      io.mepc_write_data := trapPc
       io.mcause_write_data := Cat(0.U(1.W), exception_code)
+      io.mtval_write_data := Mux(io.exc_valid, io.exc_tval, io.mtval)
       
       io.sstatus_write_data := io.sstatus
       io.sepc_write_data := io.sepc
