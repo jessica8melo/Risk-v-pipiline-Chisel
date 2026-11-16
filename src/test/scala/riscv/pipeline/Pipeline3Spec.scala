@@ -239,4 +239,179 @@ class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
       assert(sawUpdatedInstruction, "FENCE.I deveria fazer executar a instrução nova (addi x3, x0, 42)")
     }
   }
+
+  // ----------------------------------------------------------------------
+  // Testes de LR/SC/AMO. Memoria de 1 KiB: codigo em [0, 512) e dados a partir de
+  // 512, para que codigo e dados nunca dividam linha de cache (sem FENCE.I).
+  // ----------------------------------------------------------------------
+  private val dataBase = 512
+  private val marker = 0x55
+
+  private val AMOADD = 0x00
+  private val AMOSWAP = 0x01
+  private val AMOXOR = 0x04
+  private val AMOOR = 0x08
+  private val AMOAND = 0x0c
+  private val AMOMIN = 0x10
+  private val AMOMINU = 0x12
+  private val AMOMAX = 0x14
+  private val AMOMAXU = 0x16
+  private val LR = 0x02
+  private val SC = 0x03
+
+  private def u32(value: Int): BigInt = BigInt(value.toLong & 0xffffffffL)
+
+  /** Executa o programa (mais um addi x31, x0, marker) e devolve o ultimo valor
+    * escrito em cada registrador. Roda alguns ciclos extras apos o marcador para
+    * drenar writebacks de loads atrasados.
+    */
+  private def runAndCollect(program: Seq[Long], maxCycles: Int = 4000): Map[Int, BigInt] = {
+    val writes = scala.collection.mutable.Map.empty[Int, BigInt]
+    var sawMarker = false
+    test(new Pipeline3(initialProgram = program :+ addi(31, 0, marker), memoryWords = 256)) { dut =>
+      var cycles = 0
+      var extra = 0
+      while (extra < 12 && cycles < maxCycles) {
+        if (dut.io.writebackEnable.peekBoolean()) {
+          val rd = dut.io.writebackRd.peekInt().toInt
+          val data = dut.io.writebackData.peekInt()
+          if (rd != 0) writes(rd) = data
+          if (rd == 31 && data == marker) sawMarker = true
+        }
+        if (sawMarker) extra += 1
+        dut.clock.step(1)
+        cycles += 1
+      }
+    }
+    assert(sawMarker, s"programa nao terminou (marcador x31 nao observado): $writes")
+    writes.toMap
+  }
+
+  it should "falhar SC sem reserva e nao alterar a memoria" in {
+    val program = Seq(
+      addi(1, 0, dataBase),
+      addi(2, 0, 7),
+      sw(2, 1, 0), // mem = 7
+      addi(3, 0, 9),
+      atomic(SC, rd = 4, rs1 = 1, rs2 = 3), // sc.w x4, x3, (x1): sem LR previo
+      lw(5, 1, 0)
+    )
+
+    val writes = runAndCollect(program)
+    assert(writes.get(4).contains(BigInt(1)), s"SC sem reserva deveria retornar 1: $writes")
+    assert(writes.get(5).contains(BigInt(7)), s"SC falho nao pode escrever na memoria: $writes")
+  }
+
+  it should "falhar SC em endereco diferente do reservado pelo LR" in {
+    val program = Seq(
+      addi(1, 0, dataBase),
+      addi(6, 0, dataBase + 4),
+      addi(2, 0, 7),
+      atomic(LR, rd = 4, rs1 = 1, rs2 = 0), // reserva dataBase
+      atomic(SC, rd = 5, rs1 = 6, rs2 = 2), // sc em dataBase + 4
+      lw(7, 6, 0)
+    )
+
+    val writes = runAndCollect(program)
+    assert(writes.get(5).contains(BigInt(1)), s"SC em outro endereco deveria falhar: $writes")
+    assert(writes.get(7).contains(BigInt(0)), s"SC falho nao pode escrever na memoria: $writes")
+  }
+
+  it should "invalidar a reserva quando outra escrita atinge o mesmo endereco" in {
+    val program = Seq(
+      addi(1, 0, dataBase),
+      addi(2, 0, 7),
+      sw(2, 1, 0), // mem = 7
+      atomic(LR, rd = 4, rs1 = 1, rs2 = 0), // reserva e le 7
+      addi(3, 0, 9),
+      sw(3, 1, 0), // escrita intermediaria: mem = 9, reserva perdida
+      atomic(SC, rd = 5, rs1 = 1, rs2 = 2), // deveria falhar
+      lw(6, 1, 0)
+    )
+
+    val writes = runAndCollect(program)
+    assert(writes.get(4).contains(BigInt(7)), s"LR deveria ler 7: $writes")
+    assert(writes.get(5).contains(BigInt(1)), s"SC apos escrita intermediaria deveria falhar: $writes")
+    assert(writes.get(6).contains(BigInt(9)), s"memoria deveria manter o valor do sw (9): $writes")
+  }
+
+  it should "consumir a reserva no SC: um segundo SC falha" in {
+    val program = Seq(
+      addi(1, 0, dataBase),
+      addi(2, 0, 5),
+      addi(3, 0, 6),
+      atomic(LR, rd = 4, rs1 = 1, rs2 = 0),
+      atomic(SC, rd = 5, rs1 = 1, rs2 = 2), // sucesso: mem = 5
+      atomic(SC, rd = 6, rs1 = 1, rs2 = 3), // sem reserva: falha
+      lw(7, 1, 0)
+    )
+
+    val writes = runAndCollect(program)
+    assert(writes.get(5).contains(BigInt(0)), s"primeiro SC deveria ter sucesso: $writes")
+    assert(writes.get(6).contains(BigInt(1)), s"segundo SC deveria falhar: $writes")
+    assert(writes.get(7).contains(BigInt(5)), s"memoria deveria conter o valor do primeiro SC: $writes")
+  }
+
+  it should "invalidar a reserva quando um AMO atinge o mesmo endereco" in {
+    val program = Seq(
+      addi(1, 0, dataBase),
+      addi(2, 0, 4),
+      addi(3, 0, 1),
+      atomic(LR, rd = 4, rs1 = 1, rs2 = 0), // le 0 e reserva
+      atomic(AMOADD, rd = 5, rs1 = 1, rs2 = 3), // mem = 1
+      atomic(SC, rd = 6, rs1 = 1, rs2 = 2), // reserva perdida: falha
+      lw(7, 1, 0)
+    )
+
+    val writes = runAndCollect(program)
+    assert(writes.get(5).contains(BigInt(0)), s"AMOADD deveria devolver o valor antigo (0): $writes")
+    assert(writes.get(6).contains(BigInt(1)), s"SC apos AMO deveria falhar: $writes")
+    assert(writes.get(7).contains(BigInt(1)), s"memoria deveria conter apenas o resultado do AMO: $writes")
+  }
+
+  it should "executar todas as operacoes AMO.W com semantica correta" in {
+    // (nome, funct5, valor inicial na memoria, operando rs2, valor esperado na memoria)
+    val cases = Seq(
+      ("AMOSWAP", AMOSWAP, 17, -3, -3),
+      ("AMOADD", AMOADD, 100, -30, 70),
+      ("AMOAND", AMOAND, 0xf0, 0x3c, 0x30),
+      ("AMOOR", AMOOR, 0xf0, 0x0f, 0xff),
+      ("AMOXOR", AMOXOR, 0xff, 0xf0, 0x0f),
+      ("AMOMAX (mem < rs2)", AMOMAX, -5, 3, 3),
+      ("AMOMAX (mem > rs2)", AMOMAX, 3, -5, 3),
+      ("AMOMIN (mem < rs2)", AMOMIN, -5, 3, -5),
+      ("AMOMIN (mem > rs2)", AMOMIN, 3, -5, -5),
+      ("AMOMAXU (mem > rs2)", AMOMAXU, -5, 3, -5),
+      ("AMOMAXU (mem < rs2)", AMOMAXU, 3, -5, -5),
+      ("AMOMINU (mem > rs2)", AMOMINU, -5, 3, 3),
+      ("AMOMINU (mem < rs2)", AMOMINU, 3, -5, 3)
+    )
+
+    // Cada caso usa seu proprio endereco e dois registradores: x(5+2i) = valor antigo
+    // devolvido pelo AMO, x(6+2i) = valor final lido da memoria (x31 fica com o marcador).
+    val program = cases.zipWithIndex.flatMap { case ((_, funct5, mem, operand, _), i) =>
+      Seq(
+        addi(1, 0, dataBase + 16 * i),
+        addi(2, 0, mem),
+        sw(2, 1, 0),
+        addi(3, 0, operand),
+        atomic(funct5, rd = 5 + 2 * i, rs1 = 1, rs2 = 3),
+        lw(6 + 2 * i, 1, 0)
+      )
+    }
+
+    val writes = runAndCollect(program)
+    val failures = cases.zipWithIndex.flatMap { case ((name, _, mem, _, expected), i) =>
+      val old = writes.get(5 + 2 * i)
+      val fin = writes.get(6 + 2 * i)
+      val problems = Seq(
+        if (old.contains(u32(mem))) None
+        else Some(s"$name: valor antigo esperado ${u32(mem)}, observado $old"),
+        if (fin.contains(u32(expected))) None
+        else Some(s"$name: valor final esperado ${u32(expected)}, observado $fin")
+      )
+      problems.flatten
+    }
+    assert(failures.isEmpty, failures.mkString("\n"))
+  }
 }
