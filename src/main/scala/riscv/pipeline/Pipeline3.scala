@@ -203,6 +203,7 @@ class Pipeline3(
   controller.io.opcode := ifIdInstr(6, 0)
   controller.io.funct3 := ifIdInstr(14, 12)
   controller.io.funct7 := ifIdInstr(31, 25)
+  controller.io.rs2    := ifIdInstr(24, 20)
 
   regFile.io.rs1 := idRs1
   regFile.io.rs2 := idRs2

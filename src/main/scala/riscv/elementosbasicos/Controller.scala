@@ -33,6 +33,9 @@ class Controller extends Module {
     val opcode = Input(UInt(7.W))
     val funct3 = Input(UInt(3.W))
     val funct7 = Input(UInt(7.W))
+    // Campo rs2 da instrucao (bits 24:20). Usado para validar a codificacao de LR.W,
+    // que exige rs2 = 0.
+    val rs2 = Input(UInt(5.W))
 
     val signals = Output(new ControlSignals)
   })
@@ -285,7 +288,9 @@ class Controller extends Module {
           amoFunct5 === AMOFunct5.XOR || amoFunct5 === AMOFunct5.MAX ||
           amoFunct5 === AMOFunct5.MIN || amoFunct5 === AMOFunct5.MAXU ||
           amoFunct5 === AMOFunct5.MINU
-      illegal := !atomicFunct5Valido || io.funct3 =/= "b010".U
+      // LR.W exige rs2 = x0 (RISC-V A extension); qualquer outro valor e encoding reservado.
+      val lrComRs2Invalido = amoFunct5 === AMOFunct5.LR && io.rs2 =/= 0.U
+      illegal := !atomicFunct5Valido || io.funct3 =/= "b010".U || lrComRs2Invalido
 
       switch(amoFunct5) {
         is("b00010".U) {  // funct7 = 0b00010 (0x02)
