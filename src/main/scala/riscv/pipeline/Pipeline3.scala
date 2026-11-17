@@ -35,8 +35,8 @@ class DecodeExecuteBundle extends Bundle {
   * Wildcat.
   *
   * Estágios:
-  *   - IF:       busca, alinhamento e descompressão RVC (InstructionFetch + ICache)
-  *   - ID/RF:    decodificação, leitura do banco de registradores e preparação
+  *   - IF: busca, alinhamento e descompressão RVC (InstructionFetch + ICache)
+  *   - ID/RF: decodificação, leitura do banco de registradores e preparação
   *   - EX/MEM/WB: execução (ULA), acesso à memória e writeback
   *
   * Características:
@@ -82,17 +82,19 @@ class Pipeline3(
   // ============================================================
   // 1. INSTANCIAÇÃO DOS MÓDULOS
   // ============================================================
-  val l1Cache    = Module(new L1Cache)
-  val mainMemory = Module(new CacheMainMemory(
-    depthWords = memoryWords,
-    initialData = initialProgram,
-    programFile = programFile
-  ))
+  val l1Cache = Module(new L1Cache)
+  val mainMemory = Module(
+    new CacheMainMemory(
+      depthWords = memoryWords,
+      initialData = initialProgram,
+      programFile = programFile
+    )
+  )
   l1Cache.io.iMem <> mainMemory.io.iMem
   l1Cache.io.dMem <> mainMemory.io.dMem
-  val fetch      = Module(new InstructionFetch)
-  val regFile    = Module(new RegisterFile)
-  val immGen     = Module(new ImmGen)
+  val fetch = Module(new InstructionFetch)
+  val regFile = Module(new RegisterFile)
+  val immGen = Module(new ImmGen)
   val controller = Module(new Controller)
   val ula = Module(new ULA)
   val amoAlu = Module(new AmoAlu)
@@ -166,12 +168,13 @@ class Pipeline3(
   // recebe PC e instrucao do EX e `valid` fica alto por UM unico ciclo, o
   // ciclo em que a trap/retorno e tomado (ele dispara a escrita nos CSRs).
   val sysInstrInEx = idEx.valid && !idEx.signals.illegal
-  val exIsEcallEbreak = sysInstrInEx && (idEx.instr === ECALL || idEx.instr === EBREAK)
-  val exIsXret        = sysInstrInEx && (idEx.instr === MRET || idEx.instr === SRET)
-  val takeSys         = (exIsEcallEbreak || exIsXret) && !cacheWait
-  clint.io.pc             := idEx.pc
-  clint.io.instr          := idEx.instr
-  clint.io.valid          := takeSys
+  val exIsEcallEbreak =
+    sysInstrInEx && (idEx.instr === ECALL || idEx.instr === EBREAK)
+  val exIsXret = sysInstrInEx && (idEx.instr === MRET || idEx.instr === SRET)
+  val takeSys = (exIsEcallEbreak || exIsXret) && !cacheWait
+  clint.io.pc := idEx.pc
+  clint.io.instr := idEx.instr
+  clint.io.valid := takeSys
   clint.io.interrupt_flag := interrupt_flag
 
   // ============================================================
@@ -190,7 +193,8 @@ class Pipeline3(
   // ============================================================
   // 7. ESTÁGIO IF: busca de instrução pela ICache
   // ============================================================
-  val fenceIRequest = idEx.valid && !idEx.signals.illegal && idEx.signals.isFenceI
+  val fenceIRequest =
+    idEx.valid && !idEx.signals.illegal && idEx.signals.isFenceI
   l1Cache.io.fenceI := fenceIRequest
 
   // O InstructionFetch decide qual palavra de 32 bits pedir a ICache (buffer de
@@ -222,7 +226,7 @@ class Pipeline3(
   controller.io.opcode := ifIdInstr(6, 0)
   controller.io.funct3 := ifIdInstr(14, 12)
   controller.io.funct7 := ifIdInstr(31, 25)
-  controller.io.rs2    := ifIdInstr(24, 20)
+  controller.io.rs2 := ifIdInstr(24, 20)
 
   regFile.io.rs1 := idRs1
   regFile.io.rs2 := idRs2
@@ -280,11 +284,11 @@ class Pipeline3(
   //   - mtval = endereco efetivo que falhou; mepc = PC da instrucao.
   // LR/SC/AMO sao sempre de palavra (exigem alinhamento natural de 4 bytes);
   // SC desalinhado gera trap mesmo sem reserva (a checagem vem antes).
-  val exIsLR  = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
-  val exIsSC  = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
+  val exIsLR = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
+  val exIsSC = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
   val exIsAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
   val exIsAtomic = exIsLR || exIsSC || exIsAMO
-  val exIsStore  = exIsSC || exIsAMO || (idEx.signals.memWrite && !exIsAtomic)
+  val exIsStore = exIsSC || exIsAMO || (idEx.signals.memWrite && !exIsAtomic)
   val exMemAccess = idEx.valid && !idEx.signals.illegal &&
     (idEx.signals.memWrite || idEx.signals.writebackSel === WritebackSel.MEM || exIsAtomic)
 
@@ -303,8 +307,8 @@ class Pipeline3(
 
   clint.io.exc_valid := takeTrap
   clint.io.exc_cause := Mux(exIsStore, 6.U(31.W), 4.U(31.W))
-  clint.io.exc_pc    := idEx.pc
-  clint.io.exc_tval  := idEx.memAddress
+  clint.io.exc_pc := idEx.pc
+  clint.io.exc_tval := idEx.memAddress
   // Destino da trap: excecoes usam o endereco base de mtvec/stvec (bits de MODE
   // ignorados); MRET/SRET usam mepc/sepc (bit 0 ignorado, RVC permite PC par).
   val trapTarget = Mux(
@@ -329,14 +333,14 @@ class Pipeline3(
   val currentUsesRd = (usesRs1 && idRs1 === idEx.rd && idRs1 =/= 0.U) ||
     (usesRs2 && idRs2 === idEx.rd && idRs2 =/= 0.U)
   val isLoadInEx = idEx.valid &&
-                   !misalignTrap &&
-                   !idEx.signals.illegal &&
-                   idEx.signals.writebackSel === WritebackSel.MEM &&
-                   !idEx.signals.memWrite &&
-                   idEx.signals.regWrite &&
-                   idEx.signals.branchType === BranchType.NONE &&
-                   !idEx.signals.jump &&
-                   !idEx.signals.jalr
+    !misalignTrap &&
+    !idEx.signals.illegal &&
+    idEx.signals.writebackSel === WritebackSel.MEM &&
+    !idEx.signals.memWrite &&
+    idEx.signals.regWrite &&
+    idEx.signals.branchType === BranchType.NONE &&
+    !idEx.signals.jump &&
+    !idEx.signals.jalr
 
   val loadUseHazard = ifIdValid && !ifIdIllegal && isLoadInEx && currentUsesRd
   val hazardDetected = loadUseHazard
@@ -376,8 +380,8 @@ class Pipeline3(
     is(WritebackSel.IMM) { writebackData := idEx.imm }
     is(WritebackSel.CSR) { writebackData := idEx.csrReadData }
   }
-  when(isLR)  { writebackData := cachedReadData }
-  when(isSC)  { writebackData := Mux(scSuccess, 0.U, 1.U) }
+  when(isLR) { writebackData := cachedReadData }
+  when(isSC) { writebackData := Mux(scSuccess, 0.U, 1.U) }
   when(isAMO) { writebackData := cachedReadData }
   when(lwWbValid) { writebackData := lwWbData }
 
@@ -385,7 +389,7 @@ class Pipeline3(
   val writebackEnable =
     (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite && exCanCommit &&
       !hazardStall) || lwWbValid
-  val writebackRd     = Mux(lwWbValid, lwWbRd, idEx.rd)
+  val writebackRd = Mux(lwWbValid, lwWbRd, idEx.rd)
 
   // 12c. CSR forwarding
   val csrAddressEX = idEx.csrAddress
@@ -428,9 +432,9 @@ class Pipeline3(
     is(7.U) { csrWriteData := csrReadData & ~csrSrc }
   }
 
-  csr.io.cpu_write_enable  := idEx.valid && !idEx.signals.illegal && exCanCommit &&
-                              idEx.signals.csrWrite &&
-                              !clint.io.direct_write_enable
+  csr.io.cpu_write_enable := idEx.valid && !idEx.signals.illegal && exCanCommit &&
+    idEx.signals.csrWrite &&
+    !clint.io.direct_write_enable
   csr.io.cpu_write_address := idEx.csrAddress
   csr.io.cpu_write_data := idEx.csrWriteData
 
@@ -449,7 +453,11 @@ class Pipeline3(
   l1Cache.io.dCache.memSize := idEx.signals.memSize
   l1Cache.io.dCache.unsignedLoad := idEx.signals.memUnsigned
 
-  cachedReadData := Mux(dataAccessDone, dataAccessData, l1Cache.io.dCache.readData)
+  cachedReadData := Mux(
+    dataAccessDone,
+    dataAccessData,
+    l1Cache.io.dCache.readData
+  )
 
   amoAlu.io.op := idEx.signals.amoOp
   amoAlu.io.memData := cachedReadData
@@ -483,9 +491,9 @@ class Pipeline3(
     // fetch a partir dela (se valida), agora que linhas dirty foram gravadas e
     // a ICache foi invalidada.
     pcNext := Mux(ifIdValid, ifIdPc, pcReg)
-  } .elsewhen(takeAnyTrap) {
+  }.elsewhen(takeAnyTrap) {
     pcNext := trapTarget
-  } .elsewhen(takeRedirect) {
+  }.elsewhen(takeRedirect) {
     pcNext := redirectTarget
   }.elsewhen(fetch.io.valid) {
     pcNext := pcReg + fetch.io.length
@@ -502,29 +510,29 @@ class Pipeline3(
       dataAccessDone := true.B
       dataAccessData := l1Cache.io.dCache.readData
     }
-  } .elsewhen(hazardStall) {
+  }.elsewhen(hazardStall) {
     // Load-use: a leitura ja foi atendida; grava o valor e injeta uma bolha.
     lwWbValid := true.B
-    lwWbRd    := idEx.rd
-    lwWbData  := cachedReadData
-    idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
+    lwWbRd := idEx.rd
+    lwWbData := cachedReadData
+    idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
     dataAccessDone := false.B
-  } .elsewhen(fenceIComplete) {
+  }.elsewhen(fenceIComplete) {
     lwWbValid := false.B
     ifIdValid := false.B
     ifIdIllegal := false.B
     ifIdInstr := nop
-    idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
+    idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
     dataAccessDone := false.B
-  } .elsewhen(takeRedirect || takeAnyTrap) {
+  }.elsewhen(takeRedirect || takeAnyTrap) {
     // FLUSH (desvio/trap tomados): insere NOP no IF/ID e limpa o ID/EX
     lwWbValid := false.B
     ifIdValid := false.B
     ifIdIllegal := false.B
     ifIdInstr := nop
-    idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
+    idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
     dataAccessDone := false.B
-  } .otherwise {
+  }.otherwise {
     // ATUALIZAÇÃO NORMAL
     lwWbValid := false.B
     ifIdPc := pcReg

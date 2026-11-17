@@ -7,11 +7,16 @@ import org.scalatest.Tag
 import org.scalatest.flatspec.AnyFlatSpec
 import scala.collection.mutable
 
-/** Marca testes demorados no Treadle. Pular: `-- -l Slow`; so eles: `-- -n Slow`. */
+/** Marca testes demorados no Treadle. Pular: `-- -l Slow`; so eles:
+  * `-- -n Slow`.
+  */
 object Slow extends Tag("Slow")
 
 /** Reposicao LRU (4-way) e write-back de linhas sujas em todas as vias. */
-class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTestHelpers {
+class CacheLruTest
+    extends AnyFlatSpec
+    with ChiselScalatestTester
+    with CacheTestHelpers {
   behavior of "Cache (LRU e write-back)"
 
   private val Ways = CacheParams.ways
@@ -19,16 +24,21 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
   private val OtherBase = 6L * CacheParams.lineBytes // conjunto 6
   private def addrOf(base: Long, k: Int): Long = base + k.toLong * SetStride
 
-  private def orig(k: Int, i: Int): BigInt = BigInt(0x10000000L * (k + 1) + i * 0x101L + 0x5a)
+  private def orig(k: Int, i: Int): BigInt = BigInt(
+    0x10000000L * (k + 1) + i * 0x101L + 0x5a
+  )
 
   private def preload(mem: MemModel, base: Long, n: Int): Unit =
-    for (k <- 0 until n) mem.preload(addrOf(base, k), (0 until W).map(i => orig(k, i)))
+    for (k <- 0 until n)
+      mem.preload(addrOf(base, k), (0 until W).map(i => orig(k, i)))
 
   private def isHit(r: Result): Boolean = r.cycles == 2
 
   // Opcional: SIM=verilator sbt ... usa Verilator (bem mais rapido, requer instalacao).
   private val simAnnos =
-    if (sys.env.get("SIM").contains("verilator")) Seq(VerilatorBackendAnnotation) else Seq()
+    if (sys.env.get("SIM").contains("verilator"))
+      Seq(VerilatorBackendAnnotation)
+    else Seq()
 
   it should "despejar a menos recentemente usada, nao a mais antiga" in {
     test(new Cache) { dut =>
@@ -37,7 +47,8 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       preload(mem, Base, 6)
 
       // preenche a0..a3 (ordem de uso: a0 < a1 < a2 < a3) e guarda a via de cada uma
-      val wayOf = (0 until Ways).map(k => access(dut, mem, addrOf(Base, k)).hitWay)
+      val wayOf =
+        (0 until Ways).map(k => access(dut, mem, addrOf(Base, k)).hitWay)
       assert(wayOf.toSet == (0 until Ways).toSet)
 
       // reusa a0: agora a menos recente e a1
@@ -50,7 +61,8 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       assert(mem.reads == Ways + 1 && mem.writes == 0)
 
       // a2, a3, a0, a4 continuam na cache (hits, sem ir a memoria)
-      for (k <- Seq(2, 3, 0, 4)) assert(isHit(access(dut, mem, addrOf(Base, k))), s"a$k")
+      for (k <- Seq(2, 3, 0, 4))
+        assert(isHit(access(dut, mem, addrOf(Base, k))), s"a$k")
       assert(mem.reads == Ways + 1)
 
       // a1 foi despejada; a ordem de uso agora e a2 < a3 < a0 < a4, logo a1 entra na via de a2
@@ -70,7 +82,13 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
 
       // suja as 4 vias: store na palavra k da linha k
       val wayOf = (0 until Ways).map { k =>
-        access(dut, mem, addrOf(Base, k) + 4L * k, write = true, data = newVal(k)).hitWay
+        access(
+          dut,
+          mem,
+          addrOf(Base, k) + 4L * k,
+          write = true,
+          data = newVal(k)
+        ).hitWay
       }
       assert(wayOf.toSet == (0 until Ways).toSet)
       assert(mem.reads == Ways && mem.writes == 0)
@@ -83,14 +101,21 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
         assert(mem.writes == k + 1, s"write-back $k")
         val wb = mem.lines(BigInt(addrOf(Base, k)))
         for (i <- 0 until W)
-          assert(wb(i) == (if (i == k) newVal(k) else orig(k, i)), s"linha $k palavra $i")
+          assert(
+            wb(i) == (if (i == k) newVal(k) else orig(k, i)),
+            s"linha $k palavra $i"
+          )
       }
 
       // as 4 novas linhas sao limpas: despeja-las nao gera write-back
       for (k <- 0 until Ways) {
-        val r = access(dut, mem, addrOf(Base, k) + 4L * k) // recarrega a_k da memoria
+        val r =
+          access(dut, mem, addrOf(Base, k) + 4L * k) // recarrega a_k da memoria
         assert(!isHit(r))
-        assert(r.data == newVal(k), s"dado da linha $k sobreviveu ao write-back")
+        assert(
+          r.data == newVal(k),
+          s"dado da linha $k sobreviveu ao write-back"
+        )
       }
       assert(mem.writes == Ways, "despejo de linha limpa nao faz write-back")
     }
@@ -103,14 +128,17 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       preload(mem, Base, 5)
       preload(mem, OtherBase, 5)
 
-      for (k <- 0 until Ways) access(dut, mem, addrOf(OtherBase, k)) // conjunto 6: b0 < b1 < b2 < b3
+      for (k <- 0 until Ways)
+        access(dut, mem, addrOf(OtherBase, k)) // conjunto 6: b0 < b1 < b2 < b3
       for (k <- 0 until Ways) access(dut, mem, addrOf(Base, k)) // conjunto 5
-      for (k <- Seq(3, 2, 1, 0, 3)) access(dut, mem, addrOf(Base, k)) // mexe so no conjunto 5
+      for (k <- Seq(3, 2, 1, 0, 3))
+        access(dut, mem, addrOf(Base, k)) // mexe so no conjunto 5
       val readsBefore = mem.reads
 
       // miss no conjunto 6 despeja b0, sem ser afetado pela atividade do conjunto 5
       assert(!isHit(access(dut, mem, addrOf(OtherBase, 4))))
-      for (k <- Seq(1, 2, 3, 4)) assert(isHit(access(dut, mem, addrOf(OtherBase, k))), s"b$k")
+      for (k <- Seq(1, 2, 3, 4))
+        assert(isHit(access(dut, mem, addrOf(OtherBase, k))), s"b$k")
       assert(mem.reads == readsBefore + 1)
       assert(!isHit(access(dut, mem, addrOf(OtherBase, 0))), "b0 foi despejada")
     }
@@ -124,7 +152,8 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       preload(mem, Base, nTags)
 
       val golden = mutable.Map[Long, BigInt]()
-      for (k <- 0 until nTags; i <- 0 until W) golden(addrOf(Base, k) + 4L * i) = orig(k, i)
+      for (k <- 0 until nTags; i <- 0 until W)
+        golden(addrOf(Base, k) + 4L * i) = orig(k, i)
 
       var order = Vector.empty[Int] // tags residentes, MRU primeiro
       val dirty = mutable.Set[Int]()
@@ -162,7 +191,10 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
             access(dut, mem, a)
           }
 
-        assert(isHit(r) == modelHit, s"acesso $n (tag $tag): hit/miss divergiu do modelo")
+        assert(
+          isHit(r) == modelHit,
+          s"acesso $n (tag $tag): hit/miss divergiu do modelo"
+        )
         if (!isStore) assert(r.data == golden(a), s"acesso $n: dado errado")
         assert(mem.reads == expectedReads, s"acesso $n: leituras da memoria")
         assert(mem.writes == expectedWb, s"acesso $n: write-backs")
@@ -171,7 +203,10 @@ class CacheLruTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       // nada se perdeu no caminho (inclui o que foi despejado sujo)
       for (k <- 0 until nTags; i <- 0 until W) {
         val a = addrOf(Base, k) + 4L * i
-        assert(access(dut, mem, a).data == golden(a), s"varredura final tag $k palavra $i")
+        assert(
+          access(dut, mem, a).data == golden(a),
+          s"varredura final tag $k palavra $i"
+        )
       }
     }
   }

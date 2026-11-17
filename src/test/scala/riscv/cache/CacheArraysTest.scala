@@ -10,12 +10,20 @@ class CacheArraysTest extends AnyFlatSpec with ChiselScalatestTester {
   private def noWrite(dut: CacheArrays): Unit = {
     dut.io.write.en.poke(false.B)
     dut.io.write.metaEn.poke(false.B)
-    for (i <- 0 until CacheParams.wordsPerLine) dut.io.write.wordMask(i).poke(false.B)
+    for (i <- 0 until CacheParams.wordsPerLine)
+      dut.io.write.wordMask(i).poke(false.B)
   }
 
   private def writeLine(
-      dut: CacheArrays, way: Int, index: Int, tag: Int, words: Seq[Long],
-      mask: Seq[Boolean], meta: Boolean, valid: Boolean, dirty: Boolean
+      dut: CacheArrays,
+      way: Int,
+      index: Int,
+      tag: Int,
+      words: Seq[Long],
+      mask: Seq[Boolean],
+      meta: Boolean,
+      valid: Boolean,
+      dirty: Boolean
   ): Unit = {
     dut.io.write.en.poke(true.B)
     dut.io.write.way.poke(way.U)
@@ -49,8 +57,17 @@ class CacheArraysTest extends AnyFlatSpec with ChiselScalatestTester {
     test(new CacheArrays) { dut =>
       noWrite(dut)
       val words = Seq(0x11111111L, 0x22222222L, 0x33333333L, 0x44444444L)
-      writeLine(dut, way = 2, index = 5, tag = 0x1abcde, words, Seq.fill(4)(true),
-        meta = true, valid = true, dirty = false)
+      writeLine(
+        dut,
+        way = 2,
+        index = 5,
+        tag = 0x1abcde,
+        words,
+        Seq.fill(4)(true),
+        meta = true,
+        valid = true,
+        dirty = false
+      )
 
       dut.io.readIndex.poke(5.U) // sem step: leitura combinacional
       dut.io.read(2).tag.expect(0x1abcde.U)
@@ -71,8 +88,17 @@ class CacheArraysTest extends AnyFlatSpec with ChiselScalatestTester {
       noWrite(dut)
       val base = Seq(1L, 2L, 3L, 4L)
       writeLine(dut, 0, 9, 0x10, base, Seq.fill(4)(true), true, true, false)
-      writeLine(dut, 0, 9, 0x10, Seq(0L, 0xdeadbeefL, 0L, 0L),
-        Seq(false, true, false, false), true, true, true)
+      writeLine(
+        dut,
+        0,
+        9,
+        0x10,
+        Seq(0L, 0xdeadbeefL, 0L, 0L),
+        Seq(false, true, false, false),
+        true,
+        true,
+        true
+      )
 
       dut.io.readIndex.poke(9.U)
       dut.io.read(0).data(0).expect(1.U)
@@ -86,8 +112,17 @@ class CacheArraysTest extends AnyFlatSpec with ChiselScalatestTester {
   it should "nao alterar tag/valid/dirty quando metaEn = 0" in {
     test(new CacheArrays) { dut =>
       noWrite(dut)
-      writeLine(dut, 1, 3, 0x7, Seq(9L, 9L, 9L, 9L), Seq.fill(4)(true),
-        meta = false, valid = true, dirty = true)
+      writeLine(
+        dut,
+        1,
+        3,
+        0x7,
+        Seq(9L, 9L, 9L, 9L),
+        Seq.fill(4)(true),
+        meta = false,
+        valid = true,
+        dirty = true
+      )
       dut.io.readIndex.poke(3.U)
       dut.io.read(1).valid.expect(false.B)
       dut.io.read(1).dirty.expect(false.B)

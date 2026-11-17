@@ -15,8 +15,8 @@ class CacheLineRead extends Bundle {
   *
   *   - `wordMask` seleciona quais palavras da linha sao gravadas: todas em um
   *     refill, apenas uma em um store hit.
-  *   - `metaEn` grava tag/valid/dirty da via (refill, store hit -> dirty, etc.).
-  *     Pode ser usado sem gravar dado (wordMask toda em false).
+  *   - `metaEn` grava tag/valid/dirty da via (refill, store hit -> dirty,
+  *     etc.). Pode ser usado sem gravar dado (wordMask toda em false).
   */
 class CacheWritePort extends Bundle {
   val en = Bool()
@@ -38,9 +38,9 @@ class CacheWritePort extends Bundle {
   *     invalidas e limpas).
   *
   * Leitura: dado `readIndex`, as `ways` vias do conjunto saem no mesmo ciclo,
-  * sem comparacao de tag (isso e a logica de hit/miss, feita fora daqui).
-  * Se ha leitura e escrita no mesmo indice no mesmo ciclo, a leitura devolve
-  * o valor ANTIGO (a escrita so vale no proximo ciclo).
+  * sem comparacao de tag (isso e a logica de hit/miss, feita fora daqui). Se ha
+  * leitura e escrita no mesmo indice no mesmo ciclo, a leitura devolve o valor
+  * ANTIGO (a escrita so vale no proximo ciclo).
   */
 class CacheArrays extends Module {
   val io = IO(new Bundle {
@@ -51,7 +51,8 @@ class CacheArrays extends Module {
   })
 
   private val sets = CacheParams.numSets
-  private val tagMem = Seq.fill(CacheParams.ways)(Mem(sets, UInt(CacheParams.tagBits.W)))
+  private val tagMem =
+    Seq.fill(CacheParams.ways)(Mem(sets, UInt(CacheParams.tagBits.W)))
   private val dataMem = Seq.fill(CacheParams.ways)(
     Mem(sets, Vec(CacheParams.wordsPerLine, UInt(32.W)))
   )

@@ -12,7 +12,10 @@ import scala.collection.mutable
   * politica de vitima, o teste le a via de acerto pela porta `io.dbg` e exige
   * que as 4 linhas acertem em 4 vias distintas cobrindo {0,1,2,3}.
   */
-class CacheHitTest extends AnyFlatSpec with ChiselScalatestTester with CacheTestHelpers {
+class CacheHitTest
+    extends AnyFlatSpec
+    with ChiselScalatestTester
+    with CacheTestHelpers {
   behavior of "Cache (caminho de acerto)"
 
   private val Ways = CacheParams.ways
@@ -21,7 +24,9 @@ class CacheHitTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
   private def lineAddr(base: Long, k: Int): Long = base + k.toLong * SetStride
 
   /** Conteudo original da palavra i da linha k (unico por linha/palavra). */
-  private def orig(k: Int, i: Int): BigInt = BigInt(0x10000000L * (k + 1) + i * 0x101L + 0x5a)
+  private def orig(k: Int, i: Int): BigInt = BigInt(
+    0x10000000L * (k + 1) + i * 0x101L + 0x5a
+  )
 
   private def load(dut: Cache, mem: MemModel, base: Long, k: Int): Unit = {
     mem.preload(lineAddr(base, k), (0 until W).map(i => orig(k, i)))
@@ -49,9 +54,15 @@ class CacheHitTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
         assert(r.cycles == 2, "hit = Idle + CompareTag")
         assert(!r.hitDirty, "leitura nao suja a linha")
         if (wayOfLine(k) == -1) wayOfLine(k) = r.hitWay
-        assert(r.hitWay == wayOfLine(k), "todas as palavras da linha estao na mesma via")
+        assert(
+          r.hitWay == wayOfLine(k),
+          "todas as palavras da linha estao na mesma via"
+        )
       }
-      assert(wayOfLine.toSet == (0 until Ways).toSet, s"vias usadas: ${wayOfLine.toSeq}")
+      assert(
+        wayOfLine.toSet == (0 until Ways).toSet,
+        s"vias usadas: ${wayOfLine.toSeq}"
+      )
       assert(mem.reads == Ways && mem.writes == 0, "hit nao acessa a memoria")
     }
   }
@@ -73,7 +84,12 @@ class CacheHitTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
     test(new Cache) { dut =>
       initIO(dut)
       val mem = new MemModel
-      load(dut, mem, OtherBase, 8) // linha vizinha (conjunto 6), nao pode ser afetada
+      load(
+        dut,
+        mem,
+        OtherBase,
+        8
+      ) // linha vizinha (conjunto 6), nao pode ser afetada
       fillSet(dut, mem)
       val readsAfterFill = mem.reads
 
@@ -86,13 +102,25 @@ class CacheHitTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       // store hit: uma palavra diferente por via/linha
       val wayOfLine = Array.fill(Ways)(-1)
       for (k <- 0 until Ways) {
-        val r = access(dut, mem, lineAddr(Base, k) + 4L * k, write = true, data = newVal(k))
+        val r = access(
+          dut,
+          mem,
+          lineAddr(Base, k) + 4L * k,
+          write = true,
+          data = newVal(k)
+        )
         assert(r.cycles == 2, "store hit = Idle + CompareTag")
         assert(!r.hitDirty, "dirty observado antes da escrita ainda e 0")
         wayOfLine(k) = r.hitWay
       }
-      assert(wayOfLine.toSet == (0 until Ways).toSet, s"vias usadas: ${wayOfLine.toSeq}")
-      assert(mem.reads == readsAfterFill && mem.writes == 0, "store hit nao acessa a memoria")
+      assert(
+        wayOfLine.toSet == (0 until Ways).toSet,
+        s"vias usadas: ${wayOfLine.toSeq}"
+      )
+      assert(
+        mem.reads == readsAfterFill && mem.writes == 0,
+        "store hit nao acessa a memoria"
+      )
 
       // depois: so a palavra escrita mudou; linha suja; via preservada
       for (k <- 0 until Ways; i <- 0 until W) {
@@ -122,20 +150,58 @@ class CacheHitTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       for (k <- 0 until Ways) {
         // sb no byte k da palavra 0
         val b = BigInt(0xa0 + k)
-        access(dut, mem, lineAddr(Base, k) + k, write = true, data = b, size = 0)
+        access(
+          dut,
+          mem,
+          lineAddr(Base, k) + k,
+          write = true,
+          data = b,
+          size = 0
+        )
         val expW0 = (orig(k, 0) & ~(BigInt(0xff) << (8 * k))) | (b << (8 * k))
-        assert(access(dut, mem, lineAddr(Base, k)).data == expW0, s"sb via da linha $k")
-        assert(access(dut, mem, lineAddr(Base, k) + k, size = 0, unsigned = true).data == b)
         assert(
-          access(dut, mem, lineAddr(Base, k) + k, size = 0).data == BigInt(0xffffff00L | (0xa0 + k))
+          access(dut, mem, lineAddr(Base, k)).data == expW0,
+          s"sb via da linha $k"
+        )
+        assert(
+          access(
+            dut,
+            mem,
+            lineAddr(Base, k) + k,
+            size = 0,
+            unsigned = true
+          ).data == b
+        )
+        assert(
+          access(dut, mem, lineAddr(Base, k) + k, size = 0).data == BigInt(
+            0xffffff00L | (0xa0 + k)
+          )
         )
 
         // sh na metade alta da palavra 1
         val h = BigInt(0xbe00 + k)
-        access(dut, mem, lineAddr(Base, k) + 6, write = true, data = h, size = 1)
+        access(
+          dut,
+          mem,
+          lineAddr(Base, k) + 6,
+          write = true,
+          data = h,
+          size = 1
+        )
         val expW1 = (orig(k, 1) & BigInt(0xffff)) | (h << 16)
-        assert(access(dut, mem, lineAddr(Base, k) + 4).data == expW1, s"sh via da linha $k")
-        assert(access(dut, mem, lineAddr(Base, k) + 6, size = 1, unsigned = true).data == h)
+        assert(
+          access(dut, mem, lineAddr(Base, k) + 4).data == expW1,
+          s"sh via da linha $k"
+        )
+        assert(
+          access(
+            dut,
+            mem,
+            lineAddr(Base, k) + 6,
+            size = 1,
+            unsigned = true
+          ).data == h
+        )
       }
       assert(mem.reads == Ways && mem.writes == 0)
     }
@@ -155,7 +221,10 @@ class CacheHitTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
         assert(r.cycles == 2)
         if (wayOfLine(k) == -1) wayOfLine(k) = r.hitWay
       }
-      assert(wayOfLine.toSet == (0 until Ways).toSet, s"vias usadas: ${wayOfLine.toSeq}")
+      assert(
+        wayOfLine.toSet == (0 until Ways).toSet,
+        s"vias usadas: ${wayOfLine.toSeq}"
+      )
       assert(mem.reads == Ways)
     }
   }

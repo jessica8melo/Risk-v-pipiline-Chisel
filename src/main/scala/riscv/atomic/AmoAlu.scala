@@ -35,10 +35,18 @@ class AmoAlu extends Module {
     is(AMOOp.OR) { io.result := io.memData | io.operand }
     is(AMOOp.XOR) { io.result := io.memData ^ io.operand }
     is(AMOOp.MAX) {
-      io.result := Mux(io.memData.asSInt > io.operand.asSInt, io.memData, io.operand)
+      io.result := Mux(
+        io.memData.asSInt > io.operand.asSInt,
+        io.memData,
+        io.operand
+      )
     }
     is(AMOOp.MIN) {
-      io.result := Mux(io.memData.asSInt < io.operand.asSInt, io.memData, io.operand)
+      io.result := Mux(
+        io.memData.asSInt < io.operand.asSInt,
+        io.memData,
+        io.operand
+      )
     }
     is(AMOOp.MAXU) {
       io.result := Mux(io.memData > io.operand, io.memData, io.operand)

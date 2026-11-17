@@ -10,21 +10,20 @@ import chisel3.util._
   *
   * Maquina de estados (controlador bloqueante):
   *
-  *   sIdle       --request-->        sCompareTag
-  *   sCompareTag --hit-->            sIdle          (atende load/store)
-  *   sCompareTag --miss, vitima suja--> sWriteBack
-  *   sCompareTag --miss, vitima limpa/invalida--> sAllocate
-  *   sWriteBack  --mem.ready-->      sAllocate      (despeja a linha suja)
-  *   sAllocate   --mem.ready-->      sCompareTag    (preenche a linha e reavalia)
+  * sIdle --request--> sCompareTag sCompareTag --hit--> sIdle (atende
+  * load/store) sCompareTag --miss, vitima suja--> sWriteBack sCompareTag
+  * --miss, vitima limpa/invalida--> sAllocate sWriteBack --mem.ready-->
+  * sAllocate (despeja a linha suja) sAllocate --mem.ready--> sCompareTag
+  * (preenche a linha e reavalia)
   *
   * Contrato com a CPU: enquanto `stall` = 1 a CPU deve manter o pedido
   * (request/write/address/...) estavel, porque o controlador le o endereco
   * direto da porta durante todo o miss.
   *
-  * Reposicao: em miss, a vitima e a primeira via invalida do conjunto; se
-  * todas sao validas, a menos recentemente usada (CacheLru). O LRU e
-  * atualizado em todo hit; como o refill termina em sCompareTag, a linha
-  * recem-alocada tambem vira MRU pelo hit que atende o pedido.
+  * Reposicao: em miss, a vitima e a primeira via invalida do conjunto; se todas
+  * sao validas, a menos recentemente usada (CacheLru). O LRU e atualizado em
+  * todo hit; como o refill termina em sCompareTag, a linha recem-alocada tambem
+  * vira MRU pelo hit que atende o pedido.
   */
 class Cache(isInstructionCache: Boolean = false) extends Module {
   val io = IO(new Bundle {
@@ -36,7 +35,8 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
     // Observabilidade para testes (validos no ciclo em que hit = 1).
     val dbg = Output(new Bundle {
       val hitWay = UInt(log2Ceil(CacheParams.ways).W) // via em que a tag casou
-      val hitDirty = Bool() // dirty da linha ANTES de um eventual store deste ciclo
+      val hitDirty =
+        Bool() // dirty da linha ANTES de um eventual store deste ciclo
     })
   })
 
@@ -55,7 +55,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val flushSet = RegInit(0.U(CacheParams.indexBits.W))
   val flushWay = RegInit(0.U(wayBits.W))
   val flushTag = RegInit(0.U(CacheParams.tagBits.W))
-  val flushData = RegInit(VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W))))
+  val flushData = RegInit(
+    VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
+  )
 
   val addr = CacheAddress.fromUInt(io.cpu.address)
   val wordIdx = addr.offset(CacheParams.offsetBits - 1, 2)
@@ -70,7 +72,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   arrays.io.write.en := false.B
   arrays.io.write.way := 0.U
   arrays.io.write.index := addr.index
-  arrays.io.write.wordMask := VecInit(Seq.fill(CacheParams.wordsPerLine)(false.B))
+  arrays.io.write.wordMask := VecInit(
+    Seq.fill(CacheParams.wordsPerLine)(false.B)
+  )
   arrays.io.write.data := VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
   arrays.io.write.metaEn := false.B
   arrays.io.write.tag := addr.tag
@@ -102,8 +106,10 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val isHalf = io.cpu.memSize === 1.U
   val shiftBits = Cat(byteOff, 0.U(3.W))
   val shifted = hitWord >> shiftBits
-  val loadByte = Cat(Fill(24, shifted(7) && !io.cpu.unsignedLoad), shifted(7, 0))
-  val loadHalf = Cat(Fill(16, shifted(15) && !io.cpu.unsignedLoad), shifted(15, 0))
+  val loadByte =
+    Cat(Fill(24, shifted(7) && !io.cpu.unsignedLoad), shifted(7, 0))
+  val loadHalf =
+    Cat(Fill(16, shifted(15) && !io.cpu.unsignedLoad), shifted(15, 0))
   // A ICache sempre entrega a palavra inteira (o fetch seleciona o que precisa),
   // ignorando memSize/unsignedLoad.
   val loadData =
@@ -111,14 +117,22 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
     else Mux(isByte, loadByte, Mux(isHalf, loadHalf, hitWord))
 
   // ---------------------------------------------- store: merge na palavra
-  val sizeMask = Mux(isByte, "hFF".U(32.W), Mux(isHalf, "hFFFF".U(32.W), "hFFFFFFFF".U(32.W)))
+  val sizeMask = Mux(
+    isByte,
+    "hFF".U(32.W),
+    Mux(isHalf, "hFFFF".U(32.W), "hFFFFFFFF".U(32.W))
+  )
   val storeMask = (sizeMask << shiftBits)(31, 0)
-  val storeWord = (hitWord & ~storeMask) | ((io.cpu.writeData << shiftBits)(31, 0) & storeMask)
+  val storeWord = (hitWord & ~storeMask) | ((io.cpu.writeData << shiftBits)(
+    31,
+    0
+  ) & storeMask)
 
   // ------------------------------------------------------- escolha de vitima
   val invalidWays = VecInit(setLines.map(l => !l.valid))
   val hasInvalid = invalidWays.asUInt.orR
-  val victimWay = Mux(hasInvalid, PriorityEncoder(invalidWays.asUInt), lru.io.lruWay)
+  val victimWay =
+    Mux(hasInvalid, PriorityEncoder(invalidWays.asUInt), lru.io.lruWay)
   val victimWayLine = setLines(victimWay)
   val victimNeedsWriteBack = victimWayLine.valid && victimWayLine.dirty
 
@@ -170,7 +184,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
             arrays.io.write.wordMask := VecInit(
               (0 until CacheParams.wordsPerLine).map(i => wordIdx === i.U)
             )
-            arrays.io.write.data := VecInit(Seq.fill(CacheParams.wordsPerLine)(storeWord))
+            arrays.io.write.data := VecInit(
+              Seq.fill(CacheParams.wordsPerLine)(storeWord)
+            )
             arrays.io.write.metaEn := true.B
             arrays.io.write.tag := addr.tag
             arrays.io.write.valid := true.B
@@ -188,7 +204,11 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
       io.cpu.stall := true.B
       io.mem.request := true.B
       io.mem.write := true.B
-      io.mem.address := Cat(victimLine.tag, addr.index, 0.U(CacheParams.offsetBits.W))
+      io.mem.address := Cat(
+        victimLine.tag,
+        addr.index,
+        0.U(CacheParams.offsetBits.W)
+      )
       io.mem.writeLine := victimLine.data
       when(io.mem.ready) { state := sAllocate }
     }
@@ -200,7 +220,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         arrays.io.write.en := true.B
         arrays.io.write.way := victimReg
         arrays.io.write.index := addr.index
-        arrays.io.write.wordMask := VecInit(Seq.fill(CacheParams.wordsPerLine)(true.B))
+        arrays.io.write.wordMask := VecInit(
+          Seq.fill(CacheParams.wordsPerLine)(true.B)
+        )
         arrays.io.write.data := io.mem.readLine
         arrays.io.write.metaEn := true.B
         arrays.io.write.tag := addr.tag
@@ -236,7 +258,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         arrays.io.write.en := true.B
         arrays.io.write.way := flushWay
         arrays.io.write.index := flushSet
-        arrays.io.write.wordMask := VecInit(Seq.fill(CacheParams.wordsPerLine)(false.B))
+        arrays.io.write.wordMask := VecInit(
+          Seq.fill(CacheParams.wordsPerLine)(false.B)
+        )
         arrays.io.write.data := flushData
         arrays.io.write.metaEn := true.B
         arrays.io.write.tag := flushTag
@@ -255,8 +279,12 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   // Acesso desalinhado nao e suportado: o merge/extracao trabalha dentro de uma
   // unica palavra e corromperia o dado silenciosamente. Falha alto em simulacao.
   if (!isInstructionCache) {
-    val misaligned = (isHalf && byteOff(0)) || (!isByte && !isHalf && byteOff =/= 0.U)
-    assert(!(io.cpu.request && misaligned), "acesso desalinhado nao suportado pela DCache")
+    val misaligned =
+      (isHalf && byteOff(0)) || (!isByte && !isHalf && byteOff =/= 0.U)
+    assert(
+      !(io.cpu.request && misaligned),
+      "acesso desalinhado nao suportado pela DCache"
+    )
   }
 
   // Endereco precisa ficar estavel enquanto o miss e resolvido (ver contrato).

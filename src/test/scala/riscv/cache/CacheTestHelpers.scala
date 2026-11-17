@@ -4,8 +4,8 @@ import chisel3._
 import chiseltest._
 import scala.collection.mutable
 
-/** Utilitarios compartilhados pelos testes da Cache: memoria principal
-  * simulada e um `access` que conduz um pedido ate ser atendido.
+/** Utilitarios compartilhados pelos testes da Cache: memoria principal simulada
+  * e um `access` que conduz um pedido ate ser atendido.
   */
 trait CacheTestHelpers {
   val W: Int = CacheParams.wordsPerLine
@@ -17,7 +17,8 @@ trait CacheTestHelpers {
     val lines = mutable.Map[BigInt, Seq[BigInt]]()
     var reads = 0
     var writes = 0
-    def line(a: BigInt): Seq[BigInt] = lines.getOrElse(a, Seq.fill(W)(BigInt(0)))
+    def line(a: BigInt): Seq[BigInt] =
+      lines.getOrElse(a, Seq.fill(W)(BigInt(0)))
     def preload(base: BigInt, words: Seq[BigInt]): Unit = lines(base) = words
   }
 
@@ -37,10 +38,17 @@ trait CacheTestHelpers {
     for (i <- 0 until W) dut.io.mem.readLine(i).poke(0.U)
   }
 
-  /** size: 0 = byte, 1 = half, 2 = word. Devolve o dado lido e os ciclos gastos. */
+  /** size: 0 = byte, 1 = half, 2 = word. Devolve o dado lido e os ciclos
+    * gastos.
+    */
   def access(
-      dut: Cache, mem: MemModel, addr: Long, write: Boolean = false,
-      data: BigInt = 0, size: Int = 2, unsigned: Boolean = false
+      dut: Cache,
+      mem: MemModel,
+      addr: Long,
+      write: Boolean = false,
+      data: BigInt = 0,
+      size: Int = 2,
+      unsigned: Boolean = false
   ): Result = {
     dut.io.cpu.request.poke(true.B)
     dut.io.cpu.write.poke(write.B)
@@ -56,7 +64,8 @@ trait CacheTestHelpers {
       if (dut.io.mem.request.peek().litToBoolean) {
         val lineAddr = dut.io.mem.address.peek().litValue
         if (dut.io.mem.write.peek().litToBoolean) {
-          mem.lines(lineAddr) = (0 until W).map(i => dut.io.mem.writeLine(i).peek().litValue)
+          mem.lines(lineAddr) =
+            (0 until W).map(i => dut.io.mem.writeLine(i).peek().litValue)
           mem.writes += 1
         } else {
           val l = mem.line(lineAddr)

@@ -33,26 +33,21 @@ class AmoAluSpec extends AnyFlatSpec with ChiselScalatestTester {
   )
 
   private val interesting = Seq(
-    0,
-    1,
-    -1,
-    2,
-    -2,
-    0x7fffffff,
-    0x80000000,
-    0x80000001,
-    0x7fff0000,
-    123456789,
+    0, 1, -1, 2, -2, 0x7fffffff, 0x80000000, 0x80000001, 0x7fff0000, 123456789,
     -987654321
   )
 
   it should "calcular todas as operacoes AMO para pares representativos" in {
     test(new AmoAlu) { dut =>
-      for ((name, op, model) <- operations; m <- interesting; s <- interesting) {
+      for (
+        (name, op, model) <- operations; m <- interesting; s <- interesting
+      ) {
         dut.io.op.poke(op)
         dut.io.memData.poke(lit(m))
         dut.io.operand.poke(lit(s))
-        withClue(s"AMO$name mem=0x${m.toHexString} operand=0x${s.toHexString}: ") {
+        withClue(
+          s"AMO$name mem=0x${m.toHexString} operand=0x${s.toHexString}: "
+        ) {
           dut.io.result.expect(lit(model(m, s)))
         }
       }
@@ -61,7 +56,9 @@ class AmoAluSpec extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "distinguir comparacao com sinal e sem sinal" in {
     test(new AmoAlu) { dut =>
-      dut.io.memData.poke(lit(-1)) // 0xffffffff: negativo com sinal, maximo sem sinal
+      dut.io.memData.poke(
+        lit(-1)
+      ) // 0xffffffff: negativo com sinal, maximo sem sinal
       dut.io.operand.poke(lit(1))
 
       dut.io.op.poke(AMOOp.MAX)

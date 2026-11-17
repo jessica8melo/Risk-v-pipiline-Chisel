@@ -6,8 +6,8 @@ import org.scalatest.flatspec.AnyFlatSpec
 import riscv.pipeline.Pipeline3
 
 /** Politica de acesso desalinhado: trap precisa no estagio EX, antes da DCache.
-  *   - load / LR.W            -> mcause 4
-  *   - store / SC.W / AMO     -> mcause 6
+  *   - load / LR.W -> mcause 4
+  *   - store / SC.W / AMO -> mcause 6
   *   - mtval = endereco efetivo, mepc = PC da instrucao
   */
 class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
@@ -33,8 +33,8 @@ class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
   private val LB = 0; private val LH = 1; private val LW = 2
   private val SB = 0; private val SH = 1; private val SW = 2
 
-  /** Monta: mtvec=0x40; x2=addr; x6=0x55; [instrucao testada em 0x14]; x4=1 (nao deve executar);
-    * handler em 0x40 le mcause/mtval/mepc em x5/x7/x8.
+  /** Monta: mtvec=0x40; x2=addr; x6=0x55; [instrucao testada em 0x14]; x4=1
+    * (nao deve executar); handler em 0x40 le mcause/mtval/mepc em x5/x7/x8.
     */
   private def program(addr: Int, tested: Long): Seq[Long] = {
     val main = Seq(
@@ -46,7 +46,14 @@ class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
       tested, // 0x14
       addi(4, 0, 1), // 0x18 apos o trap NAO pode ser executada
       jal0, // 0x1C laco infinito: sem trap, o fluxo nao pode cair no handler
-      NOP, NOP, NOP, NOP, NOP, NOP, NOP, NOP, // 0x20..0x3C
+      NOP,
+      NOP,
+      NOP,
+      NOP,
+      NOP,
+      NOP,
+      NOP,
+      NOP, // 0x20..0x3C
       csrrs(5, 0x342, 0), // 0x40 x5 = mcause
       csrrs(7, 0x343, 0), // 0x44 x7 = mtval
       csrrs(8, 0x341, 0), // 0x48 x8 = mepc
@@ -63,7 +70,8 @@ class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
       for (_ <- 0 until cycles) {
         if (dut.io.writebackEnable.peekBoolean()) {
           val rd = dut.io.writebackRd.peekInt().toInt
-          if (!writes.contains(rd)) writes += rd -> dut.io.writebackData.peekInt()
+          if (!writes.contains(rd))
+            writes += rd -> dut.io.writebackData.peekInt()
         }
         dut.clock.step(1)
       }
@@ -72,10 +80,22 @@ class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   private def expectTrap(r: Result, cause: Int, tval: Int): Unit = {
-    assert(r.writes.get(5).contains(BigInt(cause)), s"mcause esperado $cause, obtido ${r.writes.get(5)}")
-    assert(r.writes.get(7).contains(BigInt(tval)), s"mtval esperado 0x${tval.toHexString}, obtido ${r.writes.get(7)}")
-    assert(r.writes.get(8).contains(BigInt(0x14)), s"mepc esperado 0x14, obtido ${r.writes.get(8)}")
-    assert(!r.writes.contains(4), "instrucao apos o trap nao deveria ter sido executada")
+    assert(
+      r.writes.get(5).contains(BigInt(cause)),
+      s"mcause esperado $cause, obtido ${r.writes.get(5)}"
+    )
+    assert(
+      r.writes.get(7).contains(BigInt(tval)),
+      s"mtval esperado 0x${tval.toHexString}, obtido ${r.writes.get(7)}"
+    )
+    assert(
+      r.writes.get(8).contains(BigInt(0x14)),
+      s"mepc esperado 0x14, obtido ${r.writes.get(8)}"
+    )
+    assert(
+      !r.writes.contains(4),
+      "instrucao apos o trap nao deveria ter sido executada"
+    )
   }
 
   it should "gerar mcause 4 em LW desalinhado (offset 1) sem escrever rd" in {
@@ -108,9 +128,18 @@ class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "nao gerar trap em acessos alinhados (LB impar, LH par, LW multiplo de 4)" in {
-    for (t <- Seq((0x81, load(LB, 3, 2, 0)), (0x82, load(LH, 3, 2, 0)), (0x84, load(LW, 3, 2, 0)))) {
+    for (
+      t <- Seq(
+        (0x81, load(LB, 3, 2, 0)),
+        (0x82, load(LH, 3, 2, 0)),
+        (0x84, load(LW, 3, 2, 0))
+      )
+    ) {
       val r = run(program(t._1, t._2))
-      assert(r.writes.contains(3), s"load alinhado em 0x${t._1.toHexString} deveria escrever rd")
+      assert(
+        r.writes.contains(3),
+        s"load alinhado em 0x${t._1.toHexString} deveria escrever rd"
+      )
       assert(!r.writes.contains(5), "handler nao deveria ter sido executado")
       assert(r.writes.contains(4), "fluxo normal deveria continuar")
     }

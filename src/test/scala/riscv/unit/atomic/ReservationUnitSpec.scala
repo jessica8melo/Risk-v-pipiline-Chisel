@@ -35,7 +35,10 @@ class ReservationUnitSpec extends AnyFlatSpec with ChiselScalatestTester {
   it should "comecar sem reserva" in {
     test(new ReservationUnit) { dut =>
       idle(dut)
-      assert(!hasReservation(dut, 0), "reset deveria deixar a reserva invalida (mesmo para o endereco 0)")
+      assert(
+        !hasReservation(dut, 0),
+        "reset deveria deixar a reserva invalida (mesmo para o endereco 0)"
+      )
       assert(!hasReservation(dut, addrA))
     }
   }
@@ -63,7 +66,9 @@ class ReservationUnitSpec extends AnyFlatSpec with ChiselScalatestTester {
       reserve(dut, addrA)
       dut.io.addr.poke(addrA.U)
       dut.io.scCommit.poke(true.B)
-      dut.io.hasReservation.expect(true.B) // o SC ainda enxerga a reserva neste ciclo
+      dut.io.hasReservation.expect(
+        true.B
+      ) // o SC ainda enxerga a reserva neste ciclo
       dut.clock.step(1)
       idle(dut)
       assert(!hasReservation(dut, addrA))
@@ -89,7 +94,10 @@ class ReservationUnitSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.storeHit.poke(true.B)
       dut.clock.step(1)
       idle(dut)
-      assert(hasReservation(dut, addrA), "escrita em outro endereco nao deve invalidar")
+      assert(
+        hasReservation(dut, addrA),
+        "escrita em outro endereco nao deve invalidar"
+      )
 
       dut.io.addr.poke(addrA.U) // escrita no endereco reservado
       dut.io.storeHit.poke(true.B)

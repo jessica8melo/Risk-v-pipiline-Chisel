@@ -7,18 +7,18 @@ import chisel3.util._
   *
   * Guarda, para cada conjunto, o "rank" de cada via: 0 = mais recentemente
   * usada (MRU) ... ways-1 = menos recentemente usada (LRU). Os ranks de um
-  * conjunto formam sempre uma permutacao de 0..ways-1 (reset: via i tem
-  * rank i).
+  * conjunto formam sempre uma permutacao de 0..ways-1 (reset: via i tem rank
+  * i).
   *
-  * Toque em uma via w: w passa a rank 0 e toda via com rank menor que o
-  * antigo rank de w sobe uma posicao; as mais antigas nao mudam.
+  * Toque em uma via w: w passa a rank 0 e toda via com rank menor que o antigo
+  * rank de w sobe uma posicao; as mais antigas nao mudam.
   *
   * Leitura combinacional de `lruWay` (via de rank ways-1 do conjunto `index`),
   * escrita sincrona pela porta `touch*`.
   *
   * Custo: numSets * ways * log2(ways) flip-flops (1024 para 128x4x2).
-  * Alternativa mais barata, se area importar: pseudo-LRU em arvore
-  * (ways-1 bits por conjunto), ao custo de nao ser LRU exato.
+  * Alternativa mais barata, se area importar: pseudo-LRU em arvore (ways-1 bits
+  * por conjunto), ao custo de nao ser LRU exato.
   */
 class CacheLru extends Module {
   private val wayBits = log2Ceil(CacheParams.ways)

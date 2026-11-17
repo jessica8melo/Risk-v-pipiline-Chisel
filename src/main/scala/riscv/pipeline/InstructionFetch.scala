@@ -10,8 +10,8 @@ import riscv.compressed.RvcDecompressor
   * por `memoryReadEnable`/`memoryAddress` e a resposta chega quando
   * `memoryReady` fica alto (o `hit` da ICache), com `memoryData` válido só
   * nesse ciclo. Enquanto `memoryReadEnable && !memoryReady` (miss em andamento)
-  * o pedido e o endereço ficam estáveis: o chamador não deve mudar `pc` nem
-  * dar `flush` nesse intervalo (contrato da Cache).
+  * o pedido e o endereço ficam estáveis: o chamador não deve mudar `pc` nem dar
+  * `flush` nesse intervalo (contrato da Cache).
   *
   * A palavra recebida fica no buffer (`word`), mesmo que o pipeline esteja
   * parado por outro motivo; assim a busca não se repete e o PC seguinte, na

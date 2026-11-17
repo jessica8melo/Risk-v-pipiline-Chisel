@@ -85,7 +85,7 @@ class CacheMainMemoryTest extends AnyFlatSpec with ChiselScalatestTester {
     test(
       new CacheMainMemory(
         depthWords = 8,
-        initialData = Seq(0x12345678L, 0x89ABCDEFL, 0x0BADF00DL, 0x55AA55AAL)
+        initialData = Seq(0x12345678L, 0x89abcdefL, 0x0badf00dL, 0x55aa55aaL)
       )
     ) { dut =>
       initialize(dut)

@@ -17,15 +17,15 @@ import chisel3.util.experimental.loadMemoryFromFileInline
   * mesmo ciclo, como sempre fez. Com latency >= 1 a memoria atende uma
   * transacao por vez: a porta escolhida no primeiro ciclo (DCache em caso de
   * empate) e dona do barramento ate completar, e a outra espera. O pedido da
-  * porta dona precisa ficar estavel (como a Cache ja faz); se ele cair antes
-  * de ready, a transacao e abortada sem escrever nada.
-    * Pedidos fora da capacidade nao sao aceitos: ready fica baixo, readLine
-    * retorna zero e nenhuma escrita e realizada. Pedidos desalinhados tambem
-    * ficam sem ready e disparam assert em simulacao. Como CacheMemIO nao possui
-    * canal de erro, um pedido fora da capacidade permanece aguardando.
+  * porta dona precisa ficar estavel (como a Cache ja faz); se ele cair antes de
+  * ready, a transacao e abortada sem escrever nada. Pedidos fora da capacidade
+  * nao sao aceitos: ready fica baixo, readLine retorna zero e nenhuma escrita e
+  * realizada. Pedidos desalinhados tambem ficam sem ready e disparam assert em
+  * simulacao. Como CacheMemIO nao possui canal de erro, um pedido fora da
+  * capacidade permanece aguardando.
   *
-  * `initialData` e `programFile` usam palavras de 32 bits, na ordem do
-  * programa (palavra 0 = endereco 0). Assim, programa e dados ocupam o mesmo espaco de
+  * `initialData` e `programFile` usam palavras de 32 bits, na ordem do programa
+  * (palavra 0 = endereco 0). Assim, programa e dados ocupam o mesmo espaco de
   * enderecos. Para inicializacao por arquivo, cada linha do arquivo segue o
   * formato hex aceito por loadMemoryFromFileInline.
   */
@@ -36,14 +36,23 @@ class CacheMainMemory(
     latency: Int = 0
 ) extends Module {
   require(latency >= 0, "latency nao pode ser negativa")
-  require(depthWords >= CacheParams.wordsPerLine, "memoria deve conter ao menos uma linha")
+  require(
+    depthWords >= CacheParams.wordsPerLine,
+    "memoria deve conter ao menos uma linha"
+  )
   require(isPow2(depthWords), "depthWords deve ser potencia de 2")
-  require(depthWords <= (1 << 30), "memoria nao pode exceder o espaco de enderecos de 32 bits")
+  require(
+    depthWords <= (1 << 30),
+    "memoria nao pode exceder o espaco de enderecos de 32 bits"
+  )
   require(
     depthWords % CacheParams.wordsPerLine == 0,
     "depthWords deve conter um numero inteiro de linhas de cache"
   )
-  require(initialData.length <= depthWords, "initialData excede a capacidade da memoria")
+  require(
+    initialData.length <= depthWords,
+    "initialData excede a capacidade da memoria"
+  )
   require(
     initialData.isEmpty || programFile.isEmpty,
     "use initialData para testes Chisel ou programFile para simulacao Verilog, nao ambos"
@@ -68,7 +77,8 @@ class CacheMainMemory(
   private val selectedRequest = Mux(dSel, io.dMem.request, io.iMem.request)
   private val selectedAddress = Mux(dSel, io.dMem.address, io.iMem.address)
   private val selectedWrite = Mux(dSel, io.dMem.write, io.iMem.write)
-  private val addressAligned = selectedAddress(CacheParams.offsetBits - 1, 0) === 0.U
+  private val addressAligned =
+    selectedAddress(CacheParams.offsetBits - 1, 0) === 0.U
   private val addressInRange =
     if (wordIndexBits + 2 < 32) selectedAddress(31, wordIndexBits + 2) === 0.U
     else true.B
@@ -77,7 +87,9 @@ class CacheMainMemory(
   private val complete =
     if (latency == 0) selectedRequest && addressValid
     else busy && selectedRequest && addressValid && waited === latency.U
-  private val selectedWriteLine = Wire(Vec(CacheParams.wordsPerLine, UInt(32.W)))
+  private val selectedWriteLine = Wire(
+    Vec(CacheParams.wordsPerLine, UInt(32.W))
+  )
   private val selectedReadLine = Wire(Vec(CacheParams.wordsPerLine, UInt(32.W)))
 
   for (word <- 0 until CacheParams.wordsPerLine) {
@@ -139,6 +151,9 @@ class CacheMainMemory(
   }
 
   when(selectedRequest && !addressAligned) {
-    assert(false.B, "pedido a memoria principal deve estar alinhado ao inicio da linha")
+    assert(
+      false.B,
+      "pedido a memoria principal deve estar alinhado ao inicio da linha"
+    )
   }
 }
