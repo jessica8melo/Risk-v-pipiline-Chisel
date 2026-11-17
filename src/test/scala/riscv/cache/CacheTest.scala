@@ -4,8 +4,8 @@ import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
 
-/** Wrapper minimo so para conseguir testar CacheAddress.fromUInt
-  * (ele cria um Wire, entao precisa estar dentro de um Module).
+/** Wrapper minimo so para conseguir testar CacheAddress.fromUInt (ele cria um
+  * Wire, entao precisa estar dentro de um Module).
   */
 class CacheAddressWrapper extends Module {
   val io = IO(new Bundle {

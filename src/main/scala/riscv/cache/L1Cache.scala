@@ -6,8 +6,8 @@ import chisel3.util._
 /** L1 dividido em ICache + DCache, cada uma seguindo CacheParams.
   *
   * As portas iMem/dMem podem ser conectadas a uma unica CacheMainMemory, que
-  * arbitra pedidos simultaneos e compartilha o armazenamento entre instrucoes
-  * e dados. O pipeline ainda precisa ser conectado separadamente a iCache/dCache.
+  * arbitra pedidos simultaneos e compartilha o armazenamento entre instrucoes e
+  * dados. O pipeline ainda precisa ser conectado separadamente a iCache/dCache.
   */
 class L1Cache extends Module {
   val io = IO(new Bundle {
@@ -27,7 +27,8 @@ class L1Cache extends Module {
   val instructionCache = Module(new Cache(isInstructionCache = true))
   val dataCache = Module(new Cache(isInstructionCache = false))
 
-  val fenceIdle :: fenceFlushData :: fenceInvalidateInstruction :: fenceComplete :: Nil = Enum(4)
+  val fenceIdle :: fenceFlushData :: fenceInvalidateInstruction :: fenceComplete :: Nil =
+    Enum(4)
   val fenceState = RegInit(fenceIdle)
   val fenceActive = fenceState =/= fenceIdle
 

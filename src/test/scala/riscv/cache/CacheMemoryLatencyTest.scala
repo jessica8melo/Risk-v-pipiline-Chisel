@@ -8,7 +8,8 @@ import scala.util.Random
 /** DUT de integracao: L1Cache (ICache + DCache) ligada a uma CacheMainMemory
   * com latencia configuravel. Expoe so o lado da CPU e o FENCE.I.
   */
-class L1WithMemory(latency: Int, depthWords: Int, initialData: Seq[Long]) extends Module {
+class L1WithMemory(latency: Int, depthWords: Int, initialData: Seq[Long])
+    extends Module {
   val io = IO(new Bundle {
     val iCache = Flipped(new CpuCacheIO)
     val dCache = Flipped(new CpuCacheIO)
@@ -17,7 +18,9 @@ class L1WithMemory(latency: Int, depthWords: Int, initialData: Seq[Long]) extend
   })
 
   val l1 = Module(new L1Cache)
-  val mem = Module(new CacheMainMemory(depthWords, initialData, latency = latency))
+  val mem = Module(
+    new CacheMainMemory(depthWords, initialData, latency = latency)
+  )
 
   l1.io.iMem <> mem.io.iMem
   l1.io.dMem <> mem.io.dMem
@@ -28,8 +31,8 @@ class L1WithMemory(latency: Int, depthWords: Int, initialData: Seq[Long]) extend
 }
 
 /** Testes de estresse da memoria principal: ready demorando varios ciclos,
-  * pedidos simultaneos da ICache e da DCache e write-back da DCache seguido
-  * de leitura pela ICache.
+  * pedidos simultaneos da ICache e da DCache e write-back da DCache seguido de
+  * leitura pela ICache.
   */
 class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
 
@@ -49,7 +52,11 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   /** Espera `ready` subir e devolve quantos ciclos foram esperados. */
-  private def waitReady(dut: CacheMainMemory, ready: Bool, max: Int = 50): Int = {
+  private def waitReady(
+      dut: CacheMainMemory,
+      ready: Bool,
+      max: Int = 50
+  ): Int = {
     var c = 0
     while (!ready.peek().litToBoolean) {
       require(c < max, "timeout esperando ready")
@@ -65,7 +72,11 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
   private val memData = Seq(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L)
 
   private def newMem(latency: Int) =
-    new CacheMainMemory(depthWords = 64, initialData = memData, latency = latency)
+    new CacheMainMemory(
+      depthWords = 64,
+      initialData = memData,
+      latency = latency
+    )
 
   behavior of "CacheMainMemory com latencia"
 
@@ -157,7 +168,10 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
           dut.clock.step(1)
           c += 1
         }
-        assert(c == latency, "a transacao da ICache nao pode ser atrasada pela DCache")
+        assert(
+          c == latency,
+          "a transacao da ICache nao pode ser atrasada pela DCache"
+        )
         dut.io.dMem.ready.expect(false.B)
         expectLine(dut.io.iMem, Seq(5, 6, 7, 8))
 
@@ -175,7 +189,8 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.dMem.request.poke(true.B)
       dut.io.dMem.write.poke(true.B)
       dut.io.dMem.address.poke(16.U)
-      for (w <- 0 until CacheParams.wordsPerLine) dut.io.dMem.writeLine(w).poke(0xff.U)
+      for (w <- 0 until CacheParams.wordsPerLine)
+        dut.io.dMem.writeLine(w).poke(0xff.U)
       dut.clock.step(2)
       dut.io.dMem.request.poke(false.B)
       dut.io.dMem.write.poke(false.B)
@@ -196,10 +211,12 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
   private case class Done(data: BigInt, cycles: Int)
 
   private val DataBase = 0x40L // set 4 (indice), longe da regiao de codigo
-  private val WayStride = CacheParams.numSets.toLong * CacheParams.lineBytes // mesmo set, tag diferente
+  private val WayStride =
+    CacheParams.numSets.toLong * CacheParams.lineBytes // mesmo set, tag diferente
   private val MemWords = 4096 // 16 KiB: cabe DataBase + 5 * WayStride
 
-  private def code(n: Int): Long = 0x13L + (n.toLong << 7) // palavras de "codigo" distintas
+  private def code(n: Int): Long =
+    0x13L + (n.toLong << 7) // palavras de "codigo" distintas
   private val codeWords: Seq[Long] = (0 until 16).map(code)
 
   private def newSystem(latency: Int) =
@@ -221,7 +238,10 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
     * pedido ate o respectivo hit (contrato da cache). Devolve ciclos e dado.
     */
   private def drive(
-      dut: L1WithMemory, i: Option[Op], d: Option[Op], maxCycles: Int = 600
+      dut: L1WithMemory,
+      i: Option[Op],
+      d: Option[Op],
+      maxCycles: Int = 600
   ): (Option[Done], Option[Done]) = {
     def issue(port: CpuCacheIO, op: Option[Op]): Unit = op match {
       case Some(o) =>
@@ -283,11 +303,17 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
         initCpu(dut)
         val miss = fetch(dut, 0x4)
         assert(miss.data == BigInt(code(1)))
-        assert(miss.cycles > latency, s"miss de ${miss.cycles} ciclos com latencia $latency")
+        assert(
+          miss.cycles > latency,
+          s"miss de ${miss.cycles} ciclos com latencia $latency"
+        )
 
         val hit = fetch(dut, 0x8)
         assert(hit.data == BigInt(code(2)))
-        assert(hit.cycles == 2, "hit = Idle + CompareTag, independente da latencia")
+        assert(
+          hit.cycles == 2,
+          "hit = Idle + CompareTag, independente da latencia"
+        )
 
         val dMiss = load(dut, 0x14)
         assert(dMiss.data == BigInt(code(5)))
@@ -313,15 +339,26 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
     it should s"ler na ICache o dado gravado pela DCache apos FENCE.I (latencia $latency)" in {
       test(newSystem(latency)) { dut =>
         initCpu(dut)
-        store(dut, 0x44, 0xcafe0001L) // write-allocate: linha fica suja na DCache
+        store(
+          dut,
+          0x44,
+          0xcafe0001L
+        ) // write-allocate: linha fica suja na DCache
         store(dut, 0x4c, 0xcafe0002L)
 
-        val cycles = fenceI(dut) // precisa drenar a linha suja pela memoria lenta
-        assert(cycles >= latency, s"FENCE.I terminou em $cycles ciclos, antes da latencia")
+        val cycles =
+          fenceI(dut) // precisa drenar a linha suja pela memoria lenta
+        assert(
+          cycles >= latency,
+          s"FENCE.I terminou em $cycles ciclos, antes da latencia"
+        )
 
         assert(fetch(dut, 0x44).data == BigInt(0xcafe0001L))
         assert(fetch(dut, 0x4c).data == BigInt(0xcafe0002L))
-        assert(fetch(dut, 0x40).data == BigInt(0), "palavra nao escrita continua zero")
+        assert(
+          fetch(dut, 0x40).data == BigInt(0),
+          "palavra nao escrita continua zero"
+        )
       }
     }
 
@@ -344,7 +381,10 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
           i.get.data == BigInt(0xbeef0001L),
           s"ICache leu dado velho da memoria: 0x${i.get.data.toString(16)}"
         )
-        assert(d.get.cycles >= 2 * latency, "despejo sujo = write-back + refill")
+        assert(
+          d.get.cycles >= 2 * latency,
+          "despejo sujo = write-back + refill"
+        )
       }
     }
   }
@@ -353,29 +393,48 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
     test(newSystem(4)) { dut =>
       initCpu(dut)
       val rnd = new Random(1234)
-      val model = scala.collection.mutable.Map[Long, BigInt]() // endereco -> palavra
+      val model =
+        scala.collection.mutable.Map[Long, BigInt]() // endereco -> palavra
       val bases = Seq(DataBase, DataBase + 0x10) // dois sets
       def randomAddr(): Long =
-        bases(rnd.nextInt(bases.size)) + rnd.nextInt(6) * WayStride + rnd.nextInt(4) * 4L
+        bases(rnd.nextInt(bases.size)) + rnd.nextInt(6) * WayStride + rnd
+          .nextInt(4) * 4L
 
       for (_ <- 0 until 60) {
         val iAddr = rnd.nextInt(16) * 4L // regiao de codigo, so leitura
         val dOp =
-          if (rnd.nextBoolean()) Op(randomAddr(), write = true, data = BigInt(rnd.nextInt() & 0xffffffffL))
+          if (rnd.nextBoolean())
+            Op(
+              randomAddr(),
+              write = true,
+              data = BigInt(rnd.nextInt() & 0xffffffffL)
+            )
           else Op(randomAddr())
         val withFetch = rnd.nextInt(3) != 0
-        val (i, d) = drive(dut, if (withFetch) Some(Op(iAddr)) else None, Some(dOp))
+        val (i, d) =
+          drive(dut, if (withFetch) Some(Op(iAddr)) else None, Some(dOp))
 
-        if (withFetch) assert(i.get.data == BigInt(code((iAddr / 4).toInt)), s"fetch 0x${iAddr.toHexString}")
+        if (withFetch)
+          assert(
+            i.get.data == BigInt(code((iAddr / 4).toInt)),
+            s"fetch 0x${iAddr.toHexString}"
+          )
         if (dOp.write) model(dOp.addr) = dOp.data
-        else assert(d.get.data == model.getOrElse(dOp.addr, BigInt(0)), s"load 0x${dOp.addr.toHexString}")
+        else
+          assert(
+            d.get.data == model.getOrElse(dOp.addr, BigInt(0)),
+            s"load 0x${dOp.addr.toHexString}"
+          )
       }
 
       // Depois do FENCE.I, tudo o que a DCache escreveu precisa estar na memoria
       // principal, visivel pela ICache.
       fenceI(dut)
       for ((addr, value) <- model) {
-        assert(fetch(dut, addr).data == value, s"memoria divergente em 0x${addr.toHexString}")
+        assert(
+          fetch(dut, addr).data == value,
+          s"memoria divergente em 0x${addr.toHexString}"
+        )
       }
     }
   }

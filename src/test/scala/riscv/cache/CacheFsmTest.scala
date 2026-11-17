@@ -4,7 +4,10 @@ import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
 
-class CacheFsmTest extends AnyFlatSpec with ChiselScalatestTester with CacheTestHelpers {
+class CacheFsmTest
+    extends AnyFlatSpec
+    with ChiselScalatestTester
+    with CacheTestHelpers {
   behavior of "Cache (FSM)"
 
   it should "ficar ocioso sem pedido" in {
@@ -54,7 +57,8 @@ class CacheFsmTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       val mem = new MemModel
       val d0 = BigInt(0x12345678L)
       access(dut, mem, 0L, write = true, data = d0) // via 0, suja
-      for (k <- 1 to 3) access(dut, mem, k.toLong * SetStride) // enche as 4 vias
+      for (k <- 1 to 3)
+        access(dut, mem, k.toLong * SetStride) // enche as 4 vias
       assert(mem.writes == 0)
 
       access(dut, mem, 4L * SetStride) // 5a tag no mesmo conjunto: despejo
@@ -103,7 +107,10 @@ class CacheFsmTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       }
 
       assert(done, "flush deve terminar após percorrer os conjuntos e vias")
-      assert(mem.writes == 1, s"somente a linha dirty deve gerar write-back: ${mem.writes}")
+      assert(
+        mem.writes == 1,
+        s"somente a linha dirty deve gerar write-back: ${mem.writes}"
+      )
       assert(mem.lines(BigInt(0))(0) == dirtyWord)
 
       dut.io.flushDirty.poke(false.B)
@@ -111,7 +118,10 @@ class CacheFsmTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       dut.clock.step(1)
       val cleanHit = access(dut, mem, 0L)
       assert(cleanHit.data == dirtyWord)
-      assert(!cleanHit.hitDirty, "a linha deve permanecer residente, mas limpa após flush")
+      assert(
+        !cleanHit.hitDirty,
+        "a linha deve permanecer residente, mas limpa após flush"
+      )
     }
   }
 
@@ -121,14 +131,34 @@ class CacheFsmTest extends AnyFlatSpec with ChiselScalatestTester with CacheTest
       val mem = new MemModel
       mem.preload(0x1000, Seq(BigInt(0x11223380L), 0, 0, 0))
 
-      assert(access(dut, mem, 0x1000, size = 0).data == BigInt(0xffffff80L)) // lb
-      assert(access(dut, mem, 0x1000, size = 0, unsigned = true).data == BigInt(0x80)) // lbu
+      assert(
+        access(dut, mem, 0x1000, size = 0).data == BigInt(0xffffff80L)
+      ) // lb
+      assert(
+        access(dut, mem, 0x1000, size = 0, unsigned = true).data == BigInt(0x80)
+      ) // lbu
       assert(access(dut, mem, 0x1000, size = 1).data == BigInt(0x3380)) // lh
-      assert(access(dut, mem, 0x1001, size = 0).data == BigInt(0x33)) // lb offset 1
+      assert(
+        access(dut, mem, 0x1001, size = 0).data == BigInt(0x33)
+      ) // lb offset 1
 
-      access(dut, mem, 0x1001, write = true, data = BigInt(0xaa), size = 0) // sb
+      access(
+        dut,
+        mem,
+        0x1001,
+        write = true,
+        data = BigInt(0xaa),
+        size = 0
+      ) // sb
       assert(access(dut, mem, 0x1000).data == BigInt(0x1122aa80L))
-      access(dut, mem, 0x1002, write = true, data = BigInt(0xbeef), size = 1) // sh
+      access(
+        dut,
+        mem,
+        0x1002,
+        write = true,
+        data = BigInt(0xbeef),
+        size = 1
+      ) // sh
       assert(access(dut, mem, 0x1000).data == BigInt(0xbeefaa80L))
     }
   }
