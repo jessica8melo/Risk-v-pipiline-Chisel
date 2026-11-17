@@ -1,7 +1,9 @@
 # Projeto RISC-V em Chisel
 
-Implementacao inicial de blocos modulares para uma CPU RISC-V RV32I usando Chisel (Scala).
-O projeto foi limpo para preparar um pipeline futuro: nao ha mais top-level uniciclo, apenas blocos reutilizaveis e testes unitarios.
+CPU RISC-V RV32I usando Chisel (Scala), com pipeline de 3 estagios (`Pipeline3`), CSRs e
+traps (CLINT), descompressor de instrucoes RVC, atomicas (LR/SC/AMO) e caches L1 separadas
+de instrucoes e dados ligadas a uma memoria principal simulada. Os blocos sao modulares e
+cada um tem testes unitarios.
 
 ## Requisitos
 
@@ -24,8 +26,15 @@ sbt --version
 - `src/main/scala/riscv/elementosbasicos/ImmGen.scala`: gerador de imediatos I/S/B/U/J.
 - `src/main/scala/riscv/elementosbasicos/RegisterFile.scala`: banco de 32 registradores x 32 bits.
 - `src/main/scala/riscv/elementosbasicos/Memorias.scala`: memoria de instrucao por palavra e memoria de dados por byte.
-- `src/main/scala/riscv/pipeline/Pipeline3.scala`: top-level inicial de pipeline RV32I em 3 estagios.
-- `src/test/scala/riscv/`: testes com ScalaTest + chiseltest
+- `src/main/scala/riscv/elementosbasicos/CSR.scala`: banco de CSRs (`mstatus`, `mtvec`, `mepc`, `mcause`, `mtval` e equivalentes do modo S, entre outros).
+- `src/main/scala/riscv/elementosbasicos/CLINT.scala`: logica de traps e retornos (`ECALL`, `EBREAK`, `MRET`, `SRET`), interrupcao de timer, excecoes sincronas vindas do pipeline e delegacao M/S via `medeleg`.
+- `src/main/scala/riscv/elementosbasicos/RvcDecompressor.scala`: descompressor combinacional de instrucoes compactas (RVC) para RV32I de 32 bits.
+- `src/main/scala/riscv/elementosbasicos/GenerateRvcDecompressorVerilog.scala`: gera o Verilog do descompressor RVC.
+- `src/main/scala/riscv/cache/Cache.scala`: parametros e enderecamento (`CacheParams`, `CacheAddress`), arrays de dados/tags, LRU, a FSM da cache (`Cache`) e o `L1Cache`, que junta ICache + DCache e coordena o `FENCE.I`.
+- `src/main/scala/riscv/cache/CacheMainMemory.scala`: memoria principal simulada, compartilhada pelas duas caches, com latencia configuravel.
+- `src/main/scala/riscv/pipeline/Pipeline3.scala`: top-level do pipeline RV32I em 3 estagios, integrando controlador, CSR/CLINT, `L1Cache` e `CacheMainMemory`.
+- `src/main/scala/riscv/pipeline/GeneratePipeline3Verilog.scala`: gera o Verilog do `Pipeline3` (ver a secao de simulacao).
+- `src/test/scala/riscv/`: testes com ScalaTest + chiseltest, organizados em `elementosbasicos/`, `cache/` e `pipeline/`
 - `build.sbt`: dependencias e configuracoes do build
 
 ## Como rodar o projeto
@@ -33,7 +42,7 @@ sbt --version
 Entre na pasta do projeto:
 
 ```bash
-cd "/home/victor-costa/Documentos/Risk-v-pipiline-Chisel"
+cd Risk-v-pipiline-Chisel
 ```
 
 Compile o codigo:
@@ -107,7 +116,11 @@ sudo apt install iverilog gtkwave
 
 ### Arquivo de programa
 
-O arquivo de programa usado pelo fluxo atual fica em:
+Neste README o arquivo de programa fica em `generated/program.hex`, e ele e passado
+explicitamente ao gerador nos comandos abaixo. Atencao: se o gerador for chamado
+**sem argumentos**, `GeneratePipeline3Verilog` usa por padrao `modelsim/program.hex`
+(primeiro argumento = arquivo do programa, segundo = pasta de saida, padrao `generated`).
+Por isso, sempre informe o caminho do hex ao rodar:
 
 ```text
 generated/program.hex
@@ -138,7 +151,7 @@ linha. Internamente, a memoria usa `PC / 4` para escolher a linha do arquivo.
 Entre na raiz do projeto:
 
 ```bash
-cd ~/Documentos/Risk-v-pipiline-Chisel
+cd Risk-v-pipiline-Chisel
 ```
 
 Gere o Verilog do pipeline usando `generated/program.hex` como memoria de
@@ -216,10 +229,10 @@ preenchidas ficam indefinidas.
 
 ### Abrir as ondas no GTKWave
 
-No seu caso, abra o terminal, entre na pasta do projeto e rode:
+Abra o terminal, entre na pasta do projeto e rode:
 
 ```bash
-cd ~/Documentos/Risk-v-pipiline-Chisel
+cd Risk-v-pipiline-Chisel
 gtkwave pipeline.vcd &
 ```
 
@@ -260,7 +273,7 @@ Interpretacao rapida:
 Para repetir tudo do zero:
 
 ```bash
-cd ~/Documentos/Risk-v-pipiline-Chisel
+cd Risk-v-pipiline-Chisel
 sbt "runMain riscv.pipeline.GeneratePipeline3Verilog generated/program.hex generated"
 iverilog -g2012 -o generated/pipeline3_sim.out generated/Pipeline3.v generated/tb_pipeline3.v
 vvp generated/pipeline3_sim.out
@@ -278,7 +291,9 @@ gtkwave pipeline.vcd &
 - A ULA cobre as operacoes exigidas por `OP` e `OP-IMM`: `ADD`, `SUB`, `SLL`, `SLT`, `SLTU`, `XOR`, `SRL`, `SRA`, `OR`, `AND`.
 - O controlador reconhece os opcodes RV32I usados pelo pipeline inicial: `LUI`, `AUIPC`, `JAL`, `JALR`, branches, loads, stores, `OP-IMM` e `OP`.
 - Loads/stores ja saem do controlador com tamanho (`byte`, `half`, `word`) e sinalizacao de extensao sem sinal para `LBU`/`LHU`.
-- `DataMemory` suporta `LB`, `LH`, `LW`, `LBU`, `LHU`, `SB`, `SH` e `SW` em memoria byte-addressable. O proximo passo para um core mais completo e decidir como o pipeline vai tratar acessos desalinhados e traps.
+- `DataMemory` suporta `LB`, `LH`, `LW`, `LBU`, `LHU`, `SB`, `SH` e `SW` em memoria byte-addressable.
+- Alem do RV32I base, o projeto tem a ULA com multiplicacao (`MUL`, `MULH`, `MULHSU`, `MULHU`), as atomicas `LR.W`, `SC.W` e `AMO*.W`, e o descompressor RVC.
+- Acessos desalinhados nao tem suporte por hardware: geram trap precisa no estagio EX, antes da DCache (ver a secao "Pipeline inicial").
 
 ## Pipeline inicial
 
@@ -288,7 +303,20 @@ O modulo `Pipeline3` segue a organizacao didatica do capitulo 15:
 2. ID: decode, leitura do banco de registradores e geracao de imediato.
 3. EX/MEM/WB: ULA, branch/jump, acesso a memoria de dados e write-back.
 
-Ele possui forwarding, traps/CSRs, caches L1 separadas para instrucoes e dados, e uma memoria principal simulada compartilhada. Para codigo modificado em memoria, execute `FENCE.I`: o pipeline espera o write-back de todas as linhas dirty da DCache, invalida a ICache e refaz o fetch sequencial. `FENCE` comum e tratado como no-op no modelo single-hart; acessos desalinhados continuam sem suporte final.
+Ele possui forwarding, traps/CSRs, caches L1 separadas para instrucoes e dados, e uma memoria principal simulada compartilhada. Para codigo modificado em memoria, execute `FENCE.I`: o pipeline espera o write-back de todas as linhas dirty da DCache, invalida a ICache e refaz o fetch sequencial. `FENCE` comum e tratado como no-op no modelo single-hart.
+
+### Traps e retornos
+
+`ECALL`, `EBREAK`, `MRET` e `SRET` sao resolvidos no estagio EX: o pipeline descarta as instrucoes mais novas e desvia para `mtvec`/`stvec` (traps) ou `mepc`/`sepc` (retornos). Para voltar de um `ECALL`/`EBREAK`, o handler deve somar 4 a `mepc` antes do `MRET`, pois `mepc` guarda o PC da propria instrucao.
+
+### Acessos desalinhados
+
+Nao ha suporte por hardware. O endereco e checado no EX, antes de a DCache ver o pedido, e a instrucao nao tem efeito algum (sem escrita em `rd`, na memoria ou na reserva de LR/SC):
+
+- `LH`/`LW` e `LR.W` desalinhados: `mcause = 4` (load address misaligned).
+- `SH`/`SW`, `SC.W` e `AMO*.W` desalinhados: `mcause = 6` (store/AMO address misaligned).
+- `mtval` recebe o endereco efetivo que falhou e `mepc` o PC da instrucao.
+- `LR.W`, `SC.W` e `AMO*.W` exigem alinhamento de 4 bytes; `SC.W` desalinhado gera trap mesmo sem reserva.
 
 ## Erros comuns e como resolver
 
