@@ -408,7 +408,9 @@ class Pipeline3TrapSpec extends AnyFlatSpec with ChiselScalatestTester {
       NOP,                    // 0x14
     )
 
-    test(new Pipeline3(initialProgram = program, memoryWords = 64)) { dut =>
+    // 0x100 precisa caber na memoria principal (a CacheMainMemory rejeita
+    // enderecos fora da capacidade): 128 palavras = 512 bytes.
+    test(new Pipeline3(initialProgram = program, memoryWords = 128)) { dut =>
       val x4 = new WritebackTracker
       var stallObservado = false
 

@@ -1,5 +1,6 @@
 package riscv.pipeline
 
+import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
 
@@ -26,6 +27,7 @@ class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
     (funct5.toLong << 27) | (rs2.toLong << 20) | (rs1.toLong << 15) | (0x2L << 12) |
       (rd.toLong << 7) | 0x2fL
   private val NOP = 0x00000013L
+  private val jal0 = 0x0000006fL // jal x0, 0
 
   private val LB = 0; private val LH = 1; private val LW = 2
   private val SB = 0; private val SH = 1; private val SW = 2
@@ -42,7 +44,8 @@ class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
       NOP, // 0x10
       tested, // 0x14
       addi(4, 0, 1), // 0x18 apos o trap NAO pode ser executada
-      NOP, NOP, NOP, NOP, NOP, NOP, NOP, NOP, NOP, // 0x1C..0x3C
+      jal0, // 0x1C laco infinito: sem trap, o fluxo nao pode cair no handler
+      NOP, NOP, NOP, NOP, NOP, NOP, NOP, NOP, // 0x20..0x3C
       csrrs(5, 0x342, 0), // 0x40 x5 = mcause
       csrrs(7, 0x343, 0), // 0x44 x7 = mtval
       csrrs(8, 0x341, 0), // 0x48 x8 = mepc
