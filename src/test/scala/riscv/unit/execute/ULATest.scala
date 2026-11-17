@@ -1,4 +1,4 @@
-package riscv
+package riscv.unit.execute
 
 import chisel3._
 import chiseltest._
@@ -93,7 +93,7 @@ class ULATest extends AnyFlatSpec with ChiselScalatestTester {
 
       // MULH (multiplicação alta com sinal)
       runCase(dut, "MULH", MULH, 0x00010000L, 0x00010000L, 1)
-      runCase(dut, "MULH", MULH, -2, 2, 0XffffffffL)
+      runCase(dut, "MULH", MULH, -2, 2, 0xffffffffL)
 
       // MULHU (mulitplicação alta sem sinal)
       runCase(dut, "MULHU", MULHU, 0x00010000L, 0x00010000L, 1)

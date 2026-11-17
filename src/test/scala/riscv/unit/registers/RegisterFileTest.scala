@@ -1,8 +1,9 @@
-package riscv.elementosbasicos
+package riscv.unit.registers
 
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
+import riscv.elementosbasicos.RegisterFile
 
 class RegisterFileTest extends AnyFlatSpec with ChiselScalatestTester {
 

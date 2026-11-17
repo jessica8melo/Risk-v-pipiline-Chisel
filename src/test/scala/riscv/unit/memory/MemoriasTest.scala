@@ -1,8 +1,9 @@
-package riscv.elementosbasicos
+package riscv.unit.memory
 
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
+import riscv.elementosbasicos.{DataMemory, InstructionMemory, RV32I}
 
 class MemoriasTest extends AnyFlatSpec with ChiselScalatestTester {
 
@@ -64,6 +65,7 @@ class MemoriasTest extends AnyFlatSpec with ChiselScalatestTester {
         initialData = Seq(0x13L, 0x00100093L, 0x00200113L)
       )
     ) { dut =>
+      dut.io.readEnable.poke(true.B)
       dut.io.address.poke(0.U(32.W))
       dut.clock.step(1)
       dut.io.readData.expect("h00000013".U(32.W))

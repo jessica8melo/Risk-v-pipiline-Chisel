@@ -32,9 +32,10 @@ sbt --version
 - `src/main/scala/riscv/elementosbasicos/GenerateRvcDecompressorVerilog.scala`: gera o Verilog do descompressor RVC.
 - `src/main/scala/riscv/cache/Cache.scala`: parametros e enderecamento (`CacheParams`, `CacheAddress`), arrays de dados/tags, LRU, a FSM da cache (`Cache`) e o `L1Cache`, que junta ICache + DCache e coordena o `FENCE.I`.
 - `src/main/scala/riscv/cache/CacheMainMemory.scala`: memoria principal simulada, compartilhada pelas duas caches, com latencia configuravel.
-- `src/main/scala/riscv/pipeline/Pipeline3.scala`: top-level do pipeline RV32I em 3 estagios, integrando controlador, CSR/CLINT, `L1Cache` e `CacheMainMemory`.
+- `src/main/scala/riscv/pipeline/InstructionFetch.scala`: estagio de busca com RVC. Pede palavras de 32 bits a ICache (com handshake por `memoryReady`), guarda a ultima palavra num buffer, monta instrucoes de 32 bits que cruzam o limite de palavra, expande as de 16 bits com o `RvcDecompressor` e informa o tamanho (2 ou 4 bytes) para avancar o PC.
+- `src/main/scala/riscv/pipeline/Pipeline3.scala`: top-level do pipeline RV32I (com extensoes A e C e multiplicacao) em 3 estagios, integrando `InstructionFetch`, controlador, CSR/CLINT, `L1Cache` e `CacheMainMemory`.
 - `src/main/scala/riscv/pipeline/GeneratePipeline3Verilog.scala`: gera o Verilog do `Pipeline3` (ver a secao de simulacao).
-- `src/test/scala/riscv/`: testes com ScalaTest + chiseltest, organizados em `elementosbasicos/`, `cache/` e `pipeline/`
+- `src/test/scala/riscv/`: testes com ScalaTest + chiseltest: `unit/` (blocos isolados, incluindo `fetch/`), `cache/` (cache e memoria principal), `integration/` (pipeline completo: programas, traps, RV32I, RVC), `pipeline/` (acesso desalinhado) e `diagnostics/`
 - `build.sbt`: dependencias e configuracoes do build
 
 ## Como rodar o projeto
@@ -292,14 +293,14 @@ gtkwave pipeline.vcd &
 - O controlador reconhece os opcodes RV32I usados pelo pipeline inicial: `LUI`, `AUIPC`, `JAL`, `JALR`, branches, loads, stores, `OP-IMM` e `OP`.
 - Loads/stores ja saem do controlador com tamanho (`byte`, `half`, `word`) e sinalizacao de extensao sem sinal para `LBU`/`LHU`.
 - `DataMemory` suporta `LB`, `LH`, `LW`, `LBU`, `LHU`, `SB`, `SH` e `SW` em memoria byte-addressable.
-- Alem do RV32I base, o projeto tem a ULA com multiplicacao (`MUL`, `MULH`, `MULHSU`, `MULHU`), as atomicas `LR.W`, `SC.W` e `AMO*.W`, e o descompressor RVC.
+- Alem do RV32I base, o projeto tem a ULA com multiplicacao (`MUL`, `MULH`, `MULHSU`, `MULHU`), as atomicas `LR.W`, `SC.W` e `AMO*.W`, e o RVC (instrucoes de 16 bits expandidas no `InstructionFetch`).
 - Acessos desalinhados nao tem suporte por hardware: geram trap precisa no estagio EX, antes da DCache (ver a secao "Pipeline inicial").
 
 ## Pipeline inicial
 
 O modulo `Pipeline3` segue a organizacao didatica do capitulo 15:
 
-1. IF: busca de instrucao e atualizacao do PC.
+1. IF: busca (`InstructionFetch` + ICache), descompressao RVC e atualizacao do PC (+2 ou +4).
 2. ID: decode, leitura do banco de registradores e geracao de imediato.
 3. EX/MEM/WB: ULA, branch/jump, acesso a memoria de dados e write-back.
 

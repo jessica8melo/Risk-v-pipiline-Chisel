@@ -5,20 +5,22 @@ import chisel3.util._
 
 /** Módulo de Descompressão de Instruções RVC (Extensão C) para RV32I.
   *
-  * Este módulo é ESTRITAMENTE COMBINACIONAL (sem clock e sem reset).
-  * Converte uma instrução comprimida de 16 bits (inst_c) em uma instrução
-  * RV32I base de 32 bits (inst_out).
+  * Este módulo é ESTRITAMENTE COMBINACIONAL (sem clock e sem reset). Converte
+  * uma instrução comprimida de 16 bits (inst_c) em uma instrução RV32I base de
+  * 32 bits (inst_out).
   *
-  * Caso a instrução seja inválida, não suportada pelo core ou reservada,
-  * o sinal `illegal` será acionado (true) e `inst_out` receberá NOP (ADDI x0, x0, 0).
+  * Caso a instrução seja inválida, não suportada pelo core ou reservada, o
+  * sinal `illegal` será acionado (true) e `inst_out` receberá NOP (ADDI x0, x0,
+  * 0).
   *
-  * HINTs válidos da especificação são mapeados para NOP silencioso (illegal = false).
+  * HINTs válidos da especificação são mapeados para NOP silencioso (illegal =
+  * false).
   */
 class RvcDecompressor extends RawModule {
   val io = IO(new Bundle {
-    val inst_c   = Input(UInt(16.W))
+    val inst_c = Input(UInt(16.W))
     val inst_out = Output(UInt(32.W))
-    val illegal  = Output(Bool())
+    val illegal = Output(Bool())
   })
 
   // NOP base RV32I: addi x0, x0, 0
@@ -31,47 +33,81 @@ class RvcDecompressor extends RawModule {
   val X0 = 0.U(5.W)
 
   // Opcodes RV32I
-  val OPC_LOAD   = "b0000011".U(7.W)
+  val OPC_LOAD = "b0000011".U(7.W)
   val OPC_OP_IMM = "b0010011".U(7.W)
-  val OPC_STORE  = "b0100011".U(7.W)
-  val OPC_OP     = "b0110011".U(7.W)
-  val OPC_LUI    = "b0110111".U(7.W)
+  val OPC_STORE = "b0100011".U(7.W)
+  val OPC_OP = "b0110011".U(7.W)
+  val OPC_LUI = "b0110111".U(7.W)
   val OPC_BRANCH = "b1100011".U(7.W)
-  val OPC_JALR   = "b1100111".U(7.W)
-  val OPC_JAL    = "b1101111".U(7.W)
+  val OPC_JALR = "b1100111".U(7.W)
+  val OPC_JAL = "b1101111".U(7.W)
 
   // Funct3 RV32I
   val F3_ADD_SUB = "b000".U(3.W)
-  val F3_SLL     = "b001".U(3.W)
-  val F3_SLT     = "b010".U(3.W)
-  val F3_SLTU    = "b011".U(3.W)
-  val F3_XOR     = "b100".U(3.W)
+  val F3_SLL = "b001".U(3.W)
+  val F3_SLT = "b010".U(3.W)
+  val F3_SLTU = "b011".U(3.W)
+  val F3_XOR = "b100".U(3.W)
   val F3_SRL_SRA = "b101".U(3.W)
-  val F3_OR      = "b110".U(3.W)
-  val F3_AND     = "b111".U(3.W)
+  val F3_OR = "b110".U(3.W)
+  val F3_AND = "b111".U(3.W)
 
-  val F3_BEQ     = "b000".U(3.W)
-  val F3_BNE     = "b001".U(3.W)
+  val F3_BEQ = "b000".U(3.W)
+  val F3_BNE = "b001".U(3.W)
 
-  val F3_LW      = "b010".U(3.W)
-  val F3_SW      = "b010".U(3.W)
+  val F3_LW = "b010".U(3.W)
+  val F3_SW = "b010".U(3.W)
 
   // Funct7 RV32I
-  val F7_ZERO    = "b0000000".U(7.W)
-  val F7_ALT     = "b0100000".U(7.W)
+  val F7_ZERO = "b0000000".U(7.W)
+  val F7_ALT = "b0100000".U(7.W)
 
   // Construtores de instruções RV32I de 32 bits
-  private def mkR(funct7: UInt, rs2: UInt, rs1: UInt, funct3: UInt, rd: UInt, opcode: UInt): UInt =
+  private def mkR(
+      funct7: UInt,
+      rs2: UInt,
+      rs1: UInt,
+      funct3: UInt,
+      rd: UInt,
+      opcode: UInt
+  ): UInt =
     Cat(funct7, rs2, rs1, funct3, rd, opcode)
 
-  private def mkI(imm12: UInt, rs1: UInt, funct3: UInt, rd: UInt, opcode: UInt): UInt =
+  private def mkI(
+      imm12: UInt,
+      rs1: UInt,
+      funct3: UInt,
+      rd: UInt,
+      opcode: UInt
+  ): UInt =
     Cat(imm12(11, 0), rs1, funct3, rd, opcode)
 
-  private def mkS(imm12: UInt, rs2: UInt, rs1: UInt, funct3: UInt, opcode: UInt): UInt =
+  private def mkS(
+      imm12: UInt,
+      rs2: UInt,
+      rs1: UInt,
+      funct3: UInt,
+      opcode: UInt
+  ): UInt =
     Cat(imm12(11, 5), rs2, rs1, funct3, imm12(4, 0), opcode)
 
-  private def mkB(imm13: UInt, rs2: UInt, rs1: UInt, funct3: UInt, opcode: UInt): UInt =
-    Cat(imm13(12), imm13(10, 5), rs2, rs1, funct3, imm13(4, 1), imm13(11), opcode)
+  private def mkB(
+      imm13: UInt,
+      rs2: UInt,
+      rs1: UInt,
+      funct3: UInt,
+      opcode: UInt
+  ): UInt =
+    Cat(
+      imm13(12),
+      imm13(10, 5),
+      rs2,
+      rs1,
+      funct3,
+      imm13(4, 1),
+      imm13(11),
+      opcode
+    )
 
   private def mkU(imm20: UInt, rd: UInt, opcode: UInt): UInt =
     Cat(imm20(19, 0), rd, opcode)
@@ -83,16 +119,16 @@ class RvcDecompressor extends RawModule {
   private def expandReg(r3: UInt): UInt = Cat("b01".U(2.W), r3)
 
   // Campos comuns da instrução comprimida
-  val op     = io.inst_c(1, 0)
+  val op = io.inst_c(1, 0)
   val funct3 = io.inst_c(15, 13)
-  val rd3    = io.inst_c(4, 2)
-  val rs1_3  = io.inst_c(9, 7)
-  val rs2_3  = io.inst_c(4, 2)
-  val rd5    = io.inst_c(11, 7)
-  val rs2_5  = io.inst_c(6, 2)
+  val rd3 = io.inst_c(4, 2)
+  val rs1_3 = io.inst_c(9, 7)
+  val rs2_3 = io.inst_c(4, 2)
+  val rd5 = io.inst_c(11, 7)
+  val rs2_5 = io.inst_c(6, 2)
 
   // Sinais de resultado padrão
-  val outWire     = WireDefault(NOP)
+  val outWire = WireDefault(NOP)
   val illegalWire = WireDefault(true.B)
 
   switch(op) {
@@ -113,10 +149,16 @@ class RvcDecompressor extends RawModule {
           when(nzuimm === 0.U) {
             // nzuimm = 0 é reservado na especificação
             illegalWire := true.B
-            outWire     := NOP
+            outWire := NOP
           }.otherwise {
             illegalWire := false.B
-            outWire     := mkI(Cat(0.U(2.W), nzuimm), SP, F3_ADD_SUB, expandReg(rd3), OPC_OP_IMM)
+            outWire := mkI(
+              Cat(0.U(2.W), nzuimm),
+              SP,
+              F3_ADD_SUB,
+              expandReg(rd3),
+              OPC_OP_IMM
+            )
           }
         }
 
@@ -129,7 +171,13 @@ class RvcDecompressor extends RawModule {
             0.U(2.W)
           ) // 7 bits
           illegalWire := false.B
-          outWire     := mkI(Cat(0.U(5.W), uimm), expandReg(rs1_3), F3_LW, expandReg(rd3), OPC_LOAD)
+          outWire := mkI(
+            Cat(0.U(5.W), uimm),
+            expandReg(rs1_3),
+            F3_LW,
+            expandReg(rd3),
+            OPC_LOAD
+          )
         }
 
         // C.SW: sw rs2', offset(rs1')
@@ -141,7 +189,13 @@ class RvcDecompressor extends RawModule {
             0.U(2.W)
           ) // 7 bits
           illegalWire := false.B
-          outWire     := mkS(Cat(0.U(5.W), uimm), expandReg(rs2_3), expandReg(rs1_3), F3_SW, OPC_STORE)
+          outWire := mkS(
+            Cat(0.U(5.W), uimm),
+            expandReg(rs2_3),
+            expandReg(rs1_3),
+            F3_SW,
+            OPC_STORE
+          )
         }
 
         // Demais (C.FLD, C.FLW, C.FSD, C.FSW, reservado funct3=100) -> ILLEGAL
@@ -160,14 +214,14 @@ class RvcDecompressor extends RawModule {
           when(rd5 === 0.U) {
             // C.NOP (imm6 == 0) ou C.NOP HINT (imm6 != 0): ambos NOP silencioso
             illegalWire := false.B
-            outWire     := NOP
+            outWire := NOP
           }.elsewhen(imm6 === 0.U) {
             // C.ADDI HINT (rd != 0, nzimm == 0): NOP silencioso
             illegalWire := false.B
-            outWire     := NOP
+            outWire := NOP
           }.otherwise {
             illegalWire := false.B
-            outWire     := mkI(imm12, rd5, F3_ADD_SUB, rd5, OPC_OP_IMM)
+            outWire := mkI(imm12, rd5, F3_ADD_SUB, rd5, OPC_OP_IMM)
           }
         }
 
@@ -186,7 +240,7 @@ class RvcDecompressor extends RawModule {
           ) // 12 bits com sinal
           val imm21 = Cat(Fill(9, imm12(11)), imm12)
           illegalWire := false.B
-          outWire     := mkJ(imm21, RA, OPC_JAL)
+          outWire := mkJ(imm21, RA, OPC_JAL)
         }
 
         // C.LI: addi rd, x0, imm[5:0]
@@ -196,10 +250,10 @@ class RvcDecompressor extends RawModule {
           when(rd5 === 0.U) {
             // HINT: NOP silencioso
             illegalWire := false.B
-            outWire     := NOP
+            outWire := NOP
           }.otherwise {
             illegalWire := false.B
-            outWire     := mkI(imm12, X0, F3_ADD_SUB, rd5, OPC_OP_IMM)
+            outWire := mkI(imm12, X0, F3_ADD_SUB, rd5, OPC_OP_IMM)
           }
         }
 
@@ -219,25 +273,25 @@ class RvcDecompressor extends RawModule {
             when(imm10 === 0.U) {
               // nzimm = 0 é reservado
               illegalWire := true.B
-              outWire     := NOP
+              outWire := NOP
             }.otherwise {
               val imm12 = Cat(Fill(2, imm10(9)), imm10)
               illegalWire := false.B
-              outWire     := mkI(imm12, SP, F3_ADD_SUB, SP, OPC_OP_IMM)
+              outWire := mkI(imm12, SP, F3_ADD_SUB, SP, OPC_OP_IMM)
             }
           }.elsewhen(imm6 === 0.U) {
             // C.LUI com imediato zero é reservado.
             illegalWire := true.B
-            outWire     := NOP
+            outWire := NOP
           }.elsewhen(rd5 === 0.U) {
             // C.LUI com rd=x0 e imediato não-zero é HINT.
             illegalWire := false.B
-            outWire     := NOP
+            outWire := NOP
           }.otherwise {
             // C.LUI: lui rd, nzimm[17:12]
             val imm20 = Cat(Fill(14, imm6(5)), imm6)
             illegalWire := false.B
-            outWire     := mkU(imm20, rd5, OPC_LUI)
+            outWire := mkU(imm20, rd5, OPC_LUI)
           }
         }
 
@@ -253,14 +307,20 @@ class RvcDecompressor extends RawModule {
               when(bit12 === 1.U) {
                 // shamt[5]=1 é reservado para RV32
                 illegalWire := true.B
-                outWire     := NOP
+                outWire := NOP
               }.elsewhen(shamt === 0.U) {
                 // shamt == 0 é HINT -> NOP silencioso
                 illegalWire := false.B
-                outWire     := NOP
+                outWire := NOP
               }.otherwise {
                 illegalWire := false.B
-                outWire     := mkI(Cat(0.U(7.W), shamt), expandReg(rs1_3), F3_SRL_SRA, expandReg(rs1_3), OPC_OP_IMM)
+                outWire := mkI(
+                  Cat(0.U(7.W), shamt),
+                  expandReg(rs1_3),
+                  F3_SRL_SRA,
+                  expandReg(rs1_3),
+                  OPC_OP_IMM
+                )
               }
             }
 
@@ -268,14 +328,20 @@ class RvcDecompressor extends RawModule {
             is("b01".U) {
               when(bit12 === 1.U) {
                 illegalWire := true.B
-                outWire     := NOP
+                outWire := NOP
               }.elsewhen(shamt === 0.U) {
                 illegalWire := false.B
-                outWire     := NOP
+                outWire := NOP
               }.otherwise {
                 val imm12 = Cat("b0100000".U(7.W), shamt)
                 illegalWire := false.B
-                outWire     := mkI(imm12, expandReg(rs1_3), F3_SRL_SRA, expandReg(rs1_3), OPC_OP_IMM)
+                outWire := mkI(
+                  imm12,
+                  expandReg(rs1_3),
+                  F3_SRL_SRA,
+                  expandReg(rs1_3),
+                  OPC_OP_IMM
+                )
               }
             }
 
@@ -284,7 +350,13 @@ class RvcDecompressor extends RawModule {
               val imm6 = Cat(bit12, io.inst_c(6, 2))
               val imm12 = Cat(Fill(6, imm6(5)), imm6)
               illegalWire := false.B
-              outWire     := mkI(imm12, expandReg(rs1_3), F3_AND, expandReg(rs1_3), OPC_OP_IMM)
+              outWire := mkI(
+                imm12,
+                expandReg(rs1_3),
+                F3_AND,
+                expandReg(rs1_3),
+                OPC_OP_IMM
+              )
             }
 
             // CA-format: C.SUB, C.XOR, C.OR, C.AND
@@ -292,17 +364,25 @@ class RvcDecompressor extends RawModule {
               when(bit12 === 1.U) {
                 // Reservado no RV32 (usado para C.SUBW/ADDW no RV64)
                 illegalWire := true.B
-                outWire     := NOP
+                outWire := NOP
               }.otherwise {
                 val caOp = io.inst_c(6, 5)
-                val rd   = expandReg(rs1_3)
-                val rs2  = expandReg(rs2_3)
+                val rd = expandReg(rs1_3)
+                val rs2 = expandReg(rs2_3)
                 illegalWire := false.B
                 switch(caOp) {
-                  is("b00".U) { outWire := mkR(F7_ALT,  rs2, rd, F3_ADD_SUB, rd, OPC_OP) } // C.SUB
-                  is("b01".U) { outWire := mkR(F7_ZERO, rs2, rd, F3_XOR,     rd, OPC_OP) } // C.XOR
-                  is("b10".U) { outWire := mkR(F7_ZERO, rs2, rd, F3_OR,      rd, OPC_OP) } // C.OR
-                  is("b11".U) { outWire := mkR(F7_ZERO, rs2, rd, F3_AND,     rd, OPC_OP) } // C.AND
+                  is("b00".U) {
+                    outWire := mkR(F7_ALT, rs2, rd, F3_ADD_SUB, rd, OPC_OP)
+                  } // C.SUB
+                  is("b01".U) {
+                    outWire := mkR(F7_ZERO, rs2, rd, F3_XOR, rd, OPC_OP)
+                  } // C.XOR
+                  is("b10".U) {
+                    outWire := mkR(F7_ZERO, rs2, rd, F3_OR, rd, OPC_OP)
+                  } // C.OR
+                  is("b11".U) {
+                    outWire := mkR(F7_ZERO, rs2, rd, F3_AND, rd, OPC_OP)
+                  } // C.AND
                 }
               }
             }
@@ -324,7 +404,7 @@ class RvcDecompressor extends RawModule {
           )
           val imm21 = Cat(Fill(9, imm12(11)), imm12)
           illegalWire := false.B
-          outWire     := mkJ(imm21, X0, OPC_JAL)
+          outWire := mkJ(imm21, X0, OPC_JAL)
         }
 
         // C.BEQZ: beq rs1', x0, offset[8:1]
@@ -339,7 +419,7 @@ class RvcDecompressor extends RawModule {
           ) // 9 bits
           val imm13 = Cat(Fill(4, imm9(8)), imm9)
           illegalWire := false.B
-          outWire     := mkB(imm13, X0, expandReg(rs1_3), F3_BEQ, OPC_BRANCH)
+          outWire := mkB(imm13, X0, expandReg(rs1_3), F3_BEQ, OPC_BRANCH)
         }
 
         // C.BNEZ: bne rs1', x0, offset[8:1]
@@ -354,7 +434,7 @@ class RvcDecompressor extends RawModule {
           )
           val imm13 = Cat(Fill(4, imm9(8)), imm9)
           illegalWire := false.B
-          outWire     := mkB(imm13, X0, expandReg(rs1_3), F3_BNE, OPC_BRANCH)
+          outWire := mkB(imm13, X0, expandReg(rs1_3), F3_BNE, OPC_BRANCH)
         }
       }
     }
@@ -371,18 +451,18 @@ class RvcDecompressor extends RawModule {
           when(bit12 === 1.U) {
             // shamt[5]=1 é reservado para RV32
             illegalWire := true.B
-            outWire     := NOP
+            outWire := NOP
           }.elsewhen(rd5 === 0.U) {
             // HINT: NOP silencioso
             illegalWire := false.B
-            outWire     := NOP
+            outWire := NOP
           }.elsewhen(shamt === 0.U) {
             // HINT: NOP silencioso
             illegalWire := false.B
-            outWire     := NOP
+            outWire := NOP
           }.otherwise {
             illegalWire := false.B
-            outWire     := mkI(Cat(0.U(7.W), shamt), rd5, F3_SLL, rd5, OPC_OP_IMM)
+            outWire := mkI(Cat(0.U(7.W), shamt), rd5, F3_SLL, rd5, OPC_OP_IMM)
           }
         }
 
@@ -397,10 +477,10 @@ class RvcDecompressor extends RawModule {
           when(rd5 === 0.U) {
             // rd = 0 é reservado
             illegalWire := true.B
-            outWire     := NOP
+            outWire := NOP
           }.otherwise {
             illegalWire := false.B
-            outWire     := mkI(Cat(0.U(4.W), uimm), SP, F3_LW, rd5, OPC_LOAD)
+            outWire := mkI(Cat(0.U(4.W), uimm), SP, F3_LW, rd5, OPC_LOAD)
           }
         }
 
@@ -413,20 +493,20 @@ class RvcDecompressor extends RawModule {
               when(rd5 === 0.U) {
                 // rs1 = 0 é RESERVADO
                 illegalWire := true.B
-                outWire     := NOP
+                outWire := NOP
               }.otherwise {
                 illegalWire := false.B
-                outWire     := mkI(0.U(12.W), rd5, F3_ADD_SUB, X0, OPC_JALR)
+                outWire := mkI(0.U(12.W), rd5, F3_ADD_SUB, X0, OPC_JALR)
               }
             }.otherwise {
               // C.MV: add rd, x0, rs2
               when(rd5 === 0.U) {
                 // HINT: NOP silencioso
                 illegalWire := false.B
-                outWire     := NOP
+                outWire := NOP
               }.otherwise {
                 illegalWire := false.B
-                outWire     := mkR(F7_ZERO, rs2_5, X0, F3_ADD_SUB, rd5, OPC_OP)
+                outWire := mkR(F7_ZERO, rs2_5, X0, F3_ADD_SUB, rd5, OPC_OP)
               }
             }
           }.otherwise {
@@ -434,21 +514,21 @@ class RvcDecompressor extends RawModule {
               when(rd5 === 0.U) {
                 // C.EBREAK: ebreak
                 illegalWire := false.B
-                outWire     := EBREAK
+                outWire := EBREAK
               }.otherwise {
                 // C.JALR: jalr x1, 0(rs1)
                 illegalWire := false.B
-                outWire     := mkI(0.U(12.W), rd5, F3_ADD_SUB, RA, OPC_JALR)
+                outWire := mkI(0.U(12.W), rd5, F3_ADD_SUB, RA, OPC_JALR)
               }
             }.otherwise {
               // C.ADD: add rd, rd, rs2
               when(rd5 === 0.U) {
                 // HINT: NOP silencioso
                 illegalWire := false.B
-                outWire     := NOP
+                outWire := NOP
               }.otherwise {
                 illegalWire := false.B
-                outWire     := mkR(F7_ZERO, rs2_5, rd5, F3_ADD_SUB, rd5, OPC_OP)
+                outWire := mkR(F7_ZERO, rs2_5, rd5, F3_ADD_SUB, rd5, OPC_OP)
               }
             }
           }
@@ -462,7 +542,7 @@ class RvcDecompressor extends RawModule {
             0.U(2.W)
           ) // 8 bits
           illegalWire := false.B
-          outWire     := mkS(Cat(0.U(4.W), uimm), rs2_5, SP, F3_SW, OPC_STORE)
+          outWire := mkS(Cat(0.U(4.W), uimm), rs2_5, SP, F3_SW, OPC_STORE)
         }
 
         // Demais (C.FLDSP, C.FLWSP, C.FSDSP, C.FSWSP) -> ILLEGAL
@@ -474,10 +554,10 @@ class RvcDecompressor extends RawModule {
     // ------------------------------------------------------------------------
     is("b11".U) {
       illegalWire := true.B
-      outWire     := NOP
+      outWire := NOP
     }
   }
 
   io.inst_out := outWire
-  io.illegal  := illegalWire
+  io.illegal := illegalWire
 }

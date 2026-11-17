@@ -1,9 +1,10 @@
-package riscv.pipeline
+package riscv.integration.pipeline
 
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
+import riscv.pipeline.Pipeline3
 
-class Pipeline3Spec extends AnyFlatSpec with ChiselScalatestTester {
+class ProgramExecutionSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "Pipeline3"
 
   private def addi(rd: Int, rs1: Int, imm: Int): Long = {

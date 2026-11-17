@@ -1,24 +1,25 @@
-package riscv.elementosbasicos
+package riscv.unit.compressed
 
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
+import riscv.elementosbasicos.RvcDecompressor
 
 /** Wrapper de teste para acomodar o RvcDecompressor (RawModule) dentro do
-  * ChiselScalatestTester, que exige [T <: Module].
-  * O RvcDecompressor permanece puramente combinacional (RawModule) sem clock ou reset.
+  * ChiselScalatestTester, que exige [T <: Module]. O RvcDecompressor permanece
+  * puramente combinacional (RawModule) sem clock ou reset.
   */
 class RvcDecompressorTestWrapper extends Module {
   val io = IO(new Bundle {
-    val inst_c   = Input(UInt(16.W))
+    val inst_c = Input(UInt(16.W))
     val inst_out = Output(UInt(32.W))
-    val illegal  = Output(Bool())
+    val illegal = Output(Bool())
   })
 
   val decompressor = Module(new RvcDecompressor)
   decompressor.io.inst_c := io.inst_c
-  io.inst_out            := decompressor.io.inst_out
-  io.illegal             := decompressor.io.illegal
+  io.inst_out := decompressor.io.inst_out
+  io.illegal := decompressor.io.illegal
 }
 
 object RvcGoldenModel {
@@ -29,86 +30,93 @@ object RvcGoldenModel {
   val RA: Int = 1
   val X0: Int = 0
 
-  val OPC_LOAD   = 0x03
+  val OPC_LOAD = 0x03
   val OPC_OP_IMM = 0x13
-  val OPC_STORE  = 0x23
-  val OPC_OP     = 0x33
-  val OPC_LUI    = 0x37
+  val OPC_STORE = 0x23
+  val OPC_OP = 0x33
+  val OPC_LUI = 0x37
   val OPC_BRANCH = 0x63
-  val OPC_JALR   = 0x67
-  val OPC_JAL    = 0x6f
+  val OPC_JALR = 0x67
+  val OPC_JAL = 0x6f
 
   val F3_ADD_SUB = 0
-  val F3_SLL     = 1
-  val F3_SLT     = 2
-  val F3_SLTU    = 3
-  val F3_XOR     = 4
+  val F3_SLL = 1
+  val F3_SLT = 2
+  val F3_SLTU = 3
+  val F3_XOR = 4
   val F3_SRL_SRA = 5
-  val F3_OR      = 6
-  val F3_AND     = 7
+  val F3_OR = 6
+  val F3_AND = 7
 
-  val F3_BEQ     = 0
-  val F3_BNE     = 1
+  val F3_BEQ = 0
+  val F3_BNE = 1
 
-  val F3_LW      = 2
-  val F3_SW      = 2
+  val F3_LW = 2
+  val F3_SW = 2
 
-  val F7_ZERO    = 0x00
-  val F7_ALT     = 0x20
+  val F7_ZERO = 0x00
+  val F7_ALT = 0x20
 
-  def mkR(funct7: Int, rs2: Int, rs1: Int, funct3: Int, rd: Int, opcode: Int): Long = {
+  def mkR(
+      funct7: Int,
+      rs2: Int,
+      rs1: Int,
+      funct3: Int,
+      rd: Int,
+      opcode: Int
+  ): Long = {
     ((funct7.toLong & 0x7f) << 25) |
-    ((rs2.toLong & 0x1f) << 20) |
-    ((rs1.toLong & 0x1f) << 15) |
-    ((funct3.toLong & 0x7) << 12) |
-    ((rd.toLong & 0x1f) << 7) |
-    (opcode.toLong & 0x7f)
+      ((rs2.toLong & 0x1f) << 20) |
+      ((rs1.toLong & 0x1f) << 15) |
+      ((funct3.toLong & 0x7) << 12) |
+      ((rd.toLong & 0x1f) << 7) |
+      (opcode.toLong & 0x7f)
   }
 
   def mkI(imm12: Int, rs1: Int, funct3: Int, rd: Int, opcode: Int): Long = {
     ((imm12.toLong & 0xfff) << 20) |
-    ((rs1.toLong & 0x1f) << 15) |
-    ((funct3.toLong & 0x7) << 12) |
-    ((rd.toLong & 0x1f) << 7) |
-    (opcode.toLong & 0x7f)
+      ((rs1.toLong & 0x1f) << 15) |
+      ((funct3.toLong & 0x7) << 12) |
+      ((rd.toLong & 0x1f) << 7) |
+      (opcode.toLong & 0x7f)
   }
 
   def mkS(imm12: Int, rs2: Int, rs1: Int, funct3: Int, opcode: Int): Long = {
     val imm = imm12.toLong & 0xfff
     (((imm >> 5) & 0x7f) << 25) |
-    ((rs2.toLong & 0x1f) << 20) |
-    ((rs1.toLong & 0x1f) << 15) |
-    ((funct3.toLong & 0x7) << 12) |
-    ((imm & 0x1f) << 7) |
-    (opcode.toLong & 0x7f)
+      ((rs2.toLong & 0x1f) << 20) |
+      ((rs1.toLong & 0x1f) << 15) |
+      ((funct3.toLong & 0x7) << 12) |
+      ((imm & 0x1f) << 7) |
+      (opcode.toLong & 0x7f)
   }
 
   def mkB(imm13: Int, rs2: Int, rs1: Int, funct3: Int, opcode: Int): Long = {
     val imm = imm13.toLong & 0x1fff
     (((imm >> 12) & 0x1) << 31) |
-    (((imm >> 5) & 0x3f) << 25) |
-    ((rs2.toLong & 0x1f) << 20) |
-    ((rs1.toLong & 0x1f) << 15) |
-    ((funct3.toLong & 0x7) << 12) |
-    (((imm >> 1) & 0xf) << 8) |
-    (((imm >> 11) & 0x1) << 7) |
-    (opcode.toLong & 0x7f)
+      (((imm >> 5) & 0x3f) << 25) |
+      ((rs2.toLong & 0x1f) << 20) |
+      ((rs1.toLong & 0x1f) << 15) |
+      ((funct3.toLong & 0x7) << 12) |
+      (((imm >> 1) & 0xf) << 8) |
+      (((imm >> 11) & 0x1) << 7) |
+      (opcode.toLong & 0x7f)
   }
 
   def mkU(imm20: Int, rd: Int, opcode: Int): Long = {
     ((imm20.toLong & 0xfffff) << 12) |
-    ((rd.toLong & 0x1f) << 7) |
-    (opcode.toLong & 0x7f)
+      ((rd.toLong & 0x1f) << 7) |
+      (opcode.toLong & 0x7f)
   }
 
   def mkJ(imm21: Int, rd: Int, opcode: Int): Long = {
     val imm = imm21.toLong & 0x1fffff
     (((imm >> 20) & 0x1) << 31) |
-    (((imm >> 1) & 0x3ff) << 21) |
-    (((imm >> 11) & 0x1) << 20) |
-    (((imm >> 12) & 0xff) << 12) |
-    ((rd.toLong & 0x1f) << 7) |
-    (opcode.toLong & 0x7f)
+      (((imm >> 1) & 0x3ff) << 21) |
+      (((imm >> 11) & 0x1) << 20) |
+      (((imm >> 12) & 0xff) << 12) |
+      ((rd.toLong & 0x1f) << 7) |
+      (opcode.toLong & 0x7f)
   }
 
   def expandReg(r3: Int): Int = (r3 & 0x7) + 8
@@ -120,7 +128,8 @@ object RvcGoldenModel {
   }
 
   def bit(c: Int, idx: Int): Int = (c >> idx) & 1
-  def bits(c: Int, hi: Int, lo: Int): Int = (c >> lo) & ((1 << (hi - lo + 1)) - 1)
+  def bits(c: Int, hi: Int, lo: Int): Int =
+    (c >> lo) & ((1 << (hi - lo + 1)) - 1)
 
   def decode(c: Int): (Long, Boolean) = {
     val op = bits(c, 1, 0)
@@ -135,17 +144,29 @@ object RvcGoldenModel {
       case 0 => // Q0
         funct3 match {
           case 0 => // C.ADDI4SPN
-            val nzuimm = (bits(c, 10, 7) << 6) | (bits(c, 12, 11) << 4) | (bit(c, 5) << 3) | (bit(c, 6) << 2)
+            val nzuimm = (bits(c, 10, 7) << 6) | (bits(c, 12, 11) << 4) | (bit(
+              c,
+              5
+            ) << 3) | (bit(c, 6) << 2)
             if (nzuimm == 0) (NOP, true)
-            else (mkI(nzuimm, SP, F3_ADD_SUB, expandReg(rd3), OPC_OP_IMM), false)
+            else
+              (mkI(nzuimm, SP, F3_ADD_SUB, expandReg(rd3), OPC_OP_IMM), false)
 
           case 2 => // C.LW
-            val uimm = (bit(c, 5) << 6) | (bits(c, 12, 10) << 3) | (bit(c, 6) << 2)
-            (mkI(uimm, expandReg(rs1_3), F3_LW, expandReg(rd3), OPC_LOAD), false)
+            val uimm =
+              (bit(c, 5) << 6) | (bits(c, 12, 10) << 3) | (bit(c, 6) << 2)
+            (
+              mkI(uimm, expandReg(rs1_3), F3_LW, expandReg(rd3), OPC_LOAD),
+              false
+            )
 
           case 6 => // C.SW
-            val uimm = (bit(c, 5) << 6) | (bits(c, 12, 10) << 3) | (bit(c, 6) << 2)
-            (mkS(uimm, expandReg(rs2_3), expandReg(rs1_3), F3_SW, OPC_STORE), false)
+            val uimm =
+              (bit(c, 5) << 6) | (bits(c, 12, 10) << 3) | (bit(c, 6) << 2)
+            (
+              mkS(uimm, expandReg(rs2_3), expandReg(rs1_3), F3_SW, OPC_STORE),
+              false
+            )
 
           case _ => (NOP, true)
         }
@@ -162,9 +183,10 @@ object RvcGoldenModel {
             }
 
           case 1 => // C.JAL (RV32)
-            val offset = (bit(c, 12) << 11) | (bit(c, 8) << 10) | (bits(c, 10, 9) << 8) |
-                         (bit(c, 6) << 7) | (bit(c, 7) << 6) | (bit(c, 2) << 5) |
-                         (bit(c, 11) << 4) | (bits(c, 5, 3) << 1)
+            val offset =
+              (bit(c, 12) << 11) | (bit(c, 8) << 10) | (bits(c, 10, 9) << 8) |
+                (bit(c, 6) << 7) | (bit(c, 7) << 6) | (bit(c, 2) << 5) |
+                (bit(c, 11) << 4) | (bits(c, 5, 3) << 1)
             val imm21 = sext(offset, 12)
             (mkJ(imm21, RA, OPC_JAL), false)
 
@@ -177,8 +199,9 @@ object RvcGoldenModel {
           case 3 => // C.ADDI16SP (rd=2) / C.LUI (rd!=0,2)
             val imm6 = (bit(c, 12) << 5) | bits(c, 6, 2)
             if (rd5 == SP) {
-              val imm10 = (bit(c, 12) << 9) | (bits(c, 4, 3) << 7) | (bit(c, 5) << 6) |
-                          (bit(c, 2) << 5) | (bit(c, 6) << 4)
+              val imm10 =
+                (bit(c, 12) << 9) | (bits(c, 4, 3) << 7) | (bit(c, 5) << 6) |
+                  (bit(c, 2) << 5) | (bit(c, 6) << 4)
               if (imm10 == 0) (NOP, true) // Reservado
               else {
                 val imm12 = sext(imm10, 10)
@@ -201,20 +224,48 @@ object RvcGoldenModel {
               case 0 => // C.SRLI
                 if (bit12 == 1) (NOP, true) // shamt[5]=1 no RV32
                 else if (shamt == 0) (NOP, false) // HINT
-                else (mkI(shamt, expandReg(rs1_3), F3_SRL_SRA, expandReg(rs1_3), OPC_OP_IMM), false)
+                else
+                  (
+                    mkI(
+                      shamt,
+                      expandReg(rs1_3),
+                      F3_SRL_SRA,
+                      expandReg(rs1_3),
+                      OPC_OP_IMM
+                    ),
+                    false
+                  )
 
               case 1 => // C.SRAI
                 if (bit12 == 1) (NOP, true) // shamt[5]=1 no RV32
                 else if (shamt == 0) (NOP, false) // HINT
                 else {
                   val imm12 = (0x20 << 5) | shamt
-                  (mkI(imm12, expandReg(rs1_3), F3_SRL_SRA, expandReg(rs1_3), OPC_OP_IMM), false)
+                  (
+                    mkI(
+                      imm12,
+                      expandReg(rs1_3),
+                      F3_SRL_SRA,
+                      expandReg(rs1_3),
+                      OPC_OP_IMM
+                    ),
+                    false
+                  )
                 }
 
               case 2 => // C.ANDI
                 val imm6 = (bit12 << 5) | shamt
                 val imm12 = sext(imm6, 6)
-                (mkI(imm12, expandReg(rs1_3), F3_AND, expandReg(rs1_3), OPC_OP_IMM), false)
+                (
+                  mkI(
+                    imm12,
+                    expandReg(rs1_3),
+                    F3_AND,
+                    expandReg(rs1_3),
+                    OPC_OP_IMM
+                  ),
+                  false
+                )
 
               case 3 => // CA
                 if (bit12 == 1) (NOP, true) // Reservado no RV32
@@ -223,30 +274,46 @@ object RvcGoldenModel {
                   val rd = expandReg(rs1_3)
                   val rs2 = expandReg(rs2_3)
                   caOp match {
-                    case 0 => (mkR(F7_ALT, rs2, rd, F3_ADD_SUB, rd, OPC_OP), false) // C.SUB
-                    case 1 => (mkR(F7_ZERO, rs2, rd, F3_XOR, rd, OPC_OP), false)     // C.XOR
-                    case 2 => (mkR(F7_ZERO, rs2, rd, F3_OR, rd, OPC_OP), false)      // C.OR
-                    case 3 => (mkR(F7_ZERO, rs2, rd, F3_AND, rd, OPC_OP), false)     // C.AND
+                    case 0 =>
+                      (
+                        mkR(F7_ALT, rs2, rd, F3_ADD_SUB, rd, OPC_OP),
+                        false
+                      ) // C.SUB
+                    case 1 =>
+                      (
+                        mkR(F7_ZERO, rs2, rd, F3_XOR, rd, OPC_OP),
+                        false
+                      ) // C.XOR
+                    case 2 =>
+                      (mkR(F7_ZERO, rs2, rd, F3_OR, rd, OPC_OP), false) // C.OR
+                    case 3 =>
+                      (
+                        mkR(F7_ZERO, rs2, rd, F3_AND, rd, OPC_OP),
+                        false
+                      ) // C.AND
                   }
                 }
             }
 
           case 5 => // C.J
-            val offset = (bit(c, 12) << 11) | (bit(c, 8) << 10) | (bits(c, 10, 9) << 8) |
-                         (bit(c, 6) << 7) | (bit(c, 7) << 6) | (bit(c, 2) << 5) |
-                         (bit(c, 11) << 4) | (bits(c, 5, 3) << 1)
+            val offset =
+              (bit(c, 12) << 11) | (bit(c, 8) << 10) | (bits(c, 10, 9) << 8) |
+                (bit(c, 6) << 7) | (bit(c, 7) << 6) | (bit(c, 2) << 5) |
+                (bit(c, 11) << 4) | (bits(c, 5, 3) << 1)
             val imm21 = sext(offset, 12)
             (mkJ(imm21, X0, OPC_JAL), false)
 
           case 6 => // C.BEQZ
-            val offset = (bit(c, 12) << 8) | (bits(c, 6, 5) << 6) | (bit(c, 2) << 5) |
-                         (bits(c, 11, 10) << 3) | (bits(c, 4, 3) << 1)
+            val offset =
+              (bit(c, 12) << 8) | (bits(c, 6, 5) << 6) | (bit(c, 2) << 5) |
+                (bits(c, 11, 10) << 3) | (bits(c, 4, 3) << 1)
             val imm13 = sext(offset, 9)
             (mkB(imm13, X0, expandReg(rs1_3), F3_BEQ, OPC_BRANCH), false)
 
           case 7 => // C.BNEZ
-            val offset = (bit(c, 12) << 8) | (bits(c, 6, 5) << 6) | (bit(c, 2) << 5) |
-                         (bits(c, 11, 10) << 3) | (bits(c, 4, 3) << 1)
+            val offset =
+              (bit(c, 12) << 8) | (bits(c, 6, 5) << 6) | (bit(c, 2) << 5) |
+                (bits(c, 11, 10) << 3) | (bits(c, 4, 3) << 1)
             val imm13 = sext(offset, 9)
             (mkB(imm13, X0, expandReg(rs1_3), F3_BNE, OPC_BRANCH), false)
         }
@@ -261,7 +328,8 @@ object RvcGoldenModel {
             else (mkI(shamt, rd5, F3_SLL, rd5, OPC_OP_IMM), false)
 
           case 2 => // C.LWSP
-            val uimm = (bits(c, 3, 2) << 6) | (bit(c, 12) << 5) | (bits(c, 6, 4) << 2)
+            val uimm =
+              (bits(c, 3, 2) << 6) | (bit(c, 12) << 5) | (bits(c, 6, 4) << 2)
             if (rd5 == 0) (NOP, true) // Reservado
             else (mkI(uimm, SP, F3_LW, rd5, OPC_LOAD), false)
 
@@ -273,7 +341,11 @@ object RvcGoldenModel {
                 else (mkI(0, rd5, F3_ADD_SUB, X0, OPC_JALR), false) // C.JR
               } else {
                 if (rd5 == 0) (NOP, false) // HINT
-                else (mkR(F7_ZERO, rs2_5, X0, F3_ADD_SUB, rd5, OPC_OP), false) // C.MV
+                else
+                  (
+                    mkR(F7_ZERO, rs2_5, X0, F3_ADD_SUB, rd5, OPC_OP),
+                    false
+                  ) // C.MV
               }
             } else {
               if (rs2_5 == 0) {
@@ -281,7 +353,11 @@ object RvcGoldenModel {
                 else (mkI(0, rd5, F3_ADD_SUB, RA, OPC_JALR), false) // C.JALR
               } else {
                 if (rd5 == 0) (NOP, false) // HINT
-                else (mkR(F7_ZERO, rs2_5, rd5, F3_ADD_SUB, rd5, OPC_OP), false) // C.ADD
+                else
+                  (
+                    mkR(F7_ZERO, rs2_5, rd5, F3_ADD_SUB, rd5, OPC_OP),
+                    false
+                  ) // C.ADD
               }
             }
 
@@ -417,12 +493,12 @@ class RvcDecompressorSpec extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.illegal.expect(expIll.B)
 
       // inst[11:10] = 10b -> imm[4:3] = 10b -> offset +16.
-      val inst_beqz_offset = 0xC801
+      val inst_beqz_offset = 0xc801
       dut.io.inst_c.poke(inst_beqz_offset.U(16.W))
       dut.io.illegal.expect(false.B)
       dut.io.inst_out.expect(RvcGoldenModel.mkB(16, 0, 8, 0, 0x63).U(32.W))
 
-      val inst_bnez_offset = 0xE801
+      val inst_bnez_offset = 0xe801
       dut.io.inst_c.poke(inst_bnez_offset.U(16.W))
       dut.io.illegal.expect(false.B)
       dut.io.inst_out.expect(RvcGoldenModel.mkB(16, 0, 8, 1, 0x63).U(32.W))
@@ -514,13 +590,16 @@ class RvcDecompressorSpec extends AnyFlatSpec with ChiselScalatestTester {
           if (mismatches <= 10) {
             println(
               f"MISMATCH at 0x$raw%04X: " +
-              f"expected(out=0x$expectedOut%08X, illegal=$expectedIllegal), " +
-              f"got(out=0x$gotOut%08X, illegal=$gotIllegal)"
+                f"expected(out=0x$expectedOut%08X, illegal=$expectedIllegal), " +
+                f"got(out=0x$gotOut%08X, illegal=$gotIllegal)"
             )
           }
         }
       }
-      assert(mismatches == 0, s"Foram encontrados $mismatches erros no teste exaustivo de 65536 combinacoes!")
+      assert(
+        mismatches == 0,
+        s"Foram encontrados $mismatches erros no teste exaustivo de 65536 combinacoes!"
+      )
     }
   }
 }

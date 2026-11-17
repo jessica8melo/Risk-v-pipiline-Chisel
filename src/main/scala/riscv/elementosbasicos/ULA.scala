@@ -46,10 +46,14 @@ object ALUOp {
   /** Multiplicação high: parte alta (32 bits mais significativos) de A * B */
   val MULH = 11.U(4.W)
 
-  /** Multiplicação high sem sinal: parte altsa (32 bits mais significativos) de A * B interpretando como 'UInt' */
+  /** Multiplicação high sem sinal: parte altsa (32 bits mais significativos) de
+    * A * B interpretando como 'UInt'
+    */
   val MULHU = 12.U(4.W)
 
-  /** Multiplicação high com sinal misto: parte altsa (32 bits mais significativos) de A * B interpretando apenas B como 'UInt' */
+  /** Multiplicação high com sinal misto: parte altsa (32 bits mais
+    * significativos) de A * B interpretando apenas B como 'UInt'
+    */
   val MULHSU = 13.U(4.W)
 }
 
@@ -112,8 +116,8 @@ class ULA extends Module {
     }
     is(MULHU) { res := (io.a * io.b)(63, 32) }
     is(MULHSU) {
-          val produto = io.a.asSInt * io.b
-          res := produto(63, 32).asUInt
+      val produto = io.a.asSInt * io.b
+      res := produto(63, 32).asUInt
     }
   }
 

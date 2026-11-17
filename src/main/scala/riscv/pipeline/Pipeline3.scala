@@ -10,27 +10,29 @@ import riscv._
 // BUNDLE: registradores do estágio ID/EX
 // ============================================================
 class DecodeExecuteBundle extends Bundle {
-  val valid       = Bool()
-  val pc          = UInt(32.W)
-  val instr       = UInt(32.W)
-  val rs1         = UInt(5.W)
-  val rs2         = UInt(5.W)
-  val rd          = UInt(5.W)
-  val rs1Value    = UInt(32.W)
-  val rs2Value    = UInt(32.W)
-  val imm         = UInt(32.W)
-  val memAddress  = UInt(32.W)
+  val valid = Bool()
+  val pc = UInt(32.W)
+  val instr = UInt(32.W)
+  val instrLength = UInt(3.W)
+  val rs1 = UInt(5.W)
+  val rs2 = UInt(5.W)
+  val rd = UInt(5.W)
+  val rs1Value = UInt(32.W)
+  val rs2Value = UInt(32.W)
+  val imm = UInt(32.W)
+  val memAddress = UInt(32.W)
   val memWriteData = UInt(32.W)
-  val signals     = new ControlSignals
-  val csrAddress  = UInt(12.W)
+  val signals = new ControlSignals
+  val csrAddress = UInt(12.W)
   val csrWriteData = UInt(32.W)
-  val csrReadData  = UInt(32.W)
+  val csrReadData = UInt(32.W)
 }
 
-/** Pipeline RV32I educacional de 3 estágios, inspirado no Wildcat.
+/** Pipeline RV32 com instruções comprimidas, de 3 estágios, inspirado no
+  * Wildcat.
   *
   * Estágios:
-  *   - IF:       busca de instrução pela ICache
+  *   - IF:       busca, alinhamento e descompressão RVC (InstructionFetch + ICache)
   *   - ID/RF:    decodificação, leitura do banco de registradores e preparação
   *   - EX/MEM/WB: execução (ULA), acesso à memória e writeback
   *
@@ -46,25 +48,25 @@ class Pipeline3(
     programFile: String = ""
 ) extends Module {
   val io = IO(new Bundle {
-    val pc              = Output(UInt(32.W))
-    val instr           = Output(UInt(32.W))
-    val aluResult       = Output(UInt(32.W))
-    val writebackData   = Output(UInt(32.W))
-    val writebackRd     = Output(UInt(5.W))
+    val pc = Output(UInt(32.W))
+    val instr = Output(UInt(32.W))
+    val aluResult = Output(UInt(32.W))
+    val writebackData = Output(UInt(32.W))
+    val writebackRd = Output(UInt(5.W))
     val writebackEnable = Output(Bool())
-    val illegal         = Output(Bool())
-    val stalled         = Output(Bool())
+    val illegal = Output(Bool())
+    val stalled = Output(Bool())
 
     // Debug do CLINT
-    val debug_clint_trap_assert       = Output(Bool())
-    val debug_clint_trap_to_smode     = Output(Bool())
+    val debug_clint_trap_assert = Output(Bool())
+    val debug_clint_trap_to_smode = Output(Bool())
     val debug_clint_delegate_to_smode = Output(Bool())
-    val debug_clint_exception_code    = Output(UInt(31.W))
-    val debug_clint_is_interrupt      = Output(Bool())
-    val debug_clint_trap_address      = Output(UInt(32.W))
+    val debug_clint_exception_code = Output(UInt(31.W))
+    val debug_clint_is_interrupt = Output(Bool())
+    val debug_clint_trap_address = Output(UInt(32.W))
 
     // Debug do CSR forwarding
-    val debug_csrReadData   = Output(UInt(32.W))
+    val debug_csrReadData = Output(UInt(32.W))
     val debug_csrForwarding = Output(Bool())
     val debug_csr_address_id = Output(UInt(12.W))
     val debug_csr_address_ex = Output(UInt(12.W))
@@ -72,7 +74,7 @@ class Pipeline3(
 
   import RV32I._
 
-  val nop = "h00000013".U(32.W)  // addi x0, x0, 0
+  val nop = "h00000013".U(32.W) // addi x0, x0, 0
 
   // ============================================================
   // 1. INSTANCIAÇÃO DOS MÓDULOS
@@ -85,34 +87,36 @@ class Pipeline3(
   ))
   l1Cache.io.iMem <> mainMemory.io.iMem
   l1Cache.io.dMem <> mainMemory.io.dMem
+  val fetch      = Module(new InstructionFetch)
   val regFile    = Module(new RegisterFile)
   val immGen     = Module(new ImmGen)
   val controller = Module(new Controller)
-  val ula        = Module(new ULA)
-  val csr        = Module(new CSR)
-  val clint      = Module(new CLINT)
+  val ula = Module(new ULA)
+  val csr = Module(new CSR)
+  val clint = Module(new CLINT)
 
   // ============================================================
   // 2. REGISTRADORES DE PIPELINE
   // ============================================================
-  val pcReg     = RegInit(0.U(32.W))
-  val ifIdPc    = RegInit(0.U(32.W))
+  val pcReg = RegInit(0.U(32.W))
+  val ifIdPc = RegInit(0.U(32.W))
   val ifIdInstr = RegInit(nop)
-  val idEx      = RegInit(0.U.asTypeOf(new DecodeExecuteBundle))
+  val ifIdValid = RegInit(false.B)
+  val ifIdLength = RegInit(4.U(3.W))
+  val ifIdIllegal = RegInit(false.B)
+  val idEx = RegInit(0.U.asTypeOf(new DecodeExecuteBundle))
 
   // Registrador de WB para o load durante stall
   val lwWbValid = RegInit(false.B)
-  val lwWbRd    = RegInit(0.U(5.W))
-  val lwWbData  = RegInit(0.U(32.W))
+  val lwWbRd = RegInit(0.U(5.W))
+  val lwWbData = RegInit(0.U(32.W))
 
   // Respostas das caches concluidas enquanto o restante do pipeline aguardava.
-  val fetchDone = RegInit(false.B)
-  val fetchData = RegInit(nop)
   val dataAccessDone = RegInit(false.B)
   val dataAccessData = RegInit(0.U(32.W))
 
   // Mecanismo de reserva para LR/SC
-  val reservationAddr  = RegInit(0.U(32.W))
+  val reservationAddr = RegInit(0.U(32.W))
   val reservationValid = RegInit(false.B)
 
   // ============================================================
@@ -130,28 +134,28 @@ class Pipeline3(
   // 4. CONEXÃO CLINT <-> CSR
   // ============================================================
   clint.io.mstatus := csr.io.mstatus_read
-  clint.io.mepc    := csr.io.mepc_read
-  clint.io.mcause  := csr.io.mcause_read
-  clint.io.mtvec   := csr.io.mtvec_read
-  clint.io.mie     := csr.io.mie_read
-  clint.io.mtval   := csr.io.mtval_read
+  clint.io.mepc := csr.io.mepc_read
+  clint.io.mcause := csr.io.mcause_read
+  clint.io.mtvec := csr.io.mtvec_read
+  clint.io.mie := csr.io.mie_read
+  clint.io.mtval := csr.io.mtval_read
 
   clint.io.sstatus := csr.io.sstatus_read
-  clint.io.sepc    := csr.io.sepc_read
-  clint.io.scause  := csr.io.scause_read
-  clint.io.stvec   := csr.io.stvec_read
-  clint.io.sie     := csr.io.sie_read
-  clint.io.stval   := csr.io.stval_read
+  clint.io.sepc := csr.io.sepc_read
+  clint.io.scause := csr.io.scause_read
+  clint.io.stvec := csr.io.stvec_read
+  clint.io.sie := csr.io.sie_read
+  clint.io.stval := csr.io.stval_read
 
-  clint.io.medeleg     := csr.io.medeleg_read
-  clint.io.mideleg     := csr.io.mideleg_read
+  clint.io.medeleg := csr.io.medeleg_read
+  clint.io.mideleg := csr.io.mideleg_read
   clint.io.current_priv := csr.io.current_priv
 
   // ============================================================
   // 5. INTERRUPÇÕES (a implementar)
   // ============================================================
   val timer_interrupt = WireDefault(false.B)
-  val interrupt_flag  = WireDefault(InterruptCode.None)
+  val interrupt_flag = WireDefault(InterruptCode.None)
 
   when(timer_interrupt) {
     interrupt_flag := InterruptCode.Timer0
@@ -172,14 +176,14 @@ class Pipeline3(
   // ============================================================
   // 6. CONEXÃO CLINT -> CSR (escrita com prioridade)
   // ============================================================
-  csr.io.clint_write_enable  := clint.io.direct_write_enable
+  csr.io.clint_write_enable := clint.io.direct_write_enable
   csr.io.clint_mstatus_write := clint.io.mstatus_write_data
-  csr.io.clint_mepc_write    := clint.io.mepc_write_data
-  csr.io.clint_mcause_write  := clint.io.mcause_write_data
-  csr.io.clint_mtval_write   := clint.io.mtval_write_data
-  csr.io.clint_sepc_write    := clint.io.sepc_write_data
-  csr.io.clint_scause_write  := clint.io.scause_write_data
-  csr.io.clint_stval_write   := clint.io.stval_write_data
+  csr.io.clint_mepc_write := clint.io.mepc_write_data
+  csr.io.clint_mcause_write := clint.io.mcause_write_data
+  csr.io.clint_mtval_write := clint.io.mtval_write_data
+  csr.io.clint_sepc_write := clint.io.sepc_write_data
+  csr.io.clint_scause_write := clint.io.scause_write_data
+  csr.io.clint_stval_write := clint.io.stval_write_data
   csr.io.clint_sstatus_write := clint.io.sstatus_write_data
 
   // ============================================================
@@ -188,17 +192,24 @@ class Pipeline3(
   val fenceIRequest = idEx.valid && !idEx.signals.illegal && idEx.signals.isFenceI
   l1Cache.io.fenceI := fenceIRequest
 
-  l1Cache.io.iCache.request := !fetchDone && !fenceIRequest
+  // O InstructionFetch decide qual palavra de 32 bits pedir a ICache (buffer de
+  // palavra, RVC e instrucoes que cruzam o limite de palavra). Ele continua
+  // pedindo e guardando palavras mesmo com o pipeline parado por outra cache:
+  // a palavra fica no buffer e o fetch nao e repetido. Durante FENCE.I nao ha
+  // pedido a ICache (ela esta sendo invalidada).
+  fetch.io.pc := pcReg
+  fetch.io.enable := !fenceIRequest
+  fetch.io.flush := flushPipeline
+  fetch.io.memoryReady := l1Cache.io.iCache.hit
+  fetch.io.memoryData := l1Cache.io.iCache.readData
+  l1Cache.io.iCache.request := fetch.io.memoryReadEnable
   l1Cache.io.iCache.write := false.B
-  l1Cache.io.iCache.address := pcReg
+  l1Cache.io.iCache.address := fetch.io.memoryAddress
   l1Cache.io.iCache.writeData := 0.U
   l1Cache.io.iCache.memSize := MemorySize.WORD
   l1Cache.io.iCache.unsignedLoad := false.B
-
-  val fetchReady = fenceIRequest || fetchDone || l1Cache.io.iCache.hit
-  val fetchWait = !fetchReady
+  val fetchWait = fetch.io.memoryReadEnable && !l1Cache.io.iCache.hit
   val fenceIWait = fenceIRequest && !l1Cache.io.fenceIDone
-  val fetchedInstruction = Mux(fetchDone, fetchData, l1Cache.io.iCache.readData)
 
   // ============================================================
   // 8. ESTÁGIO ID: decodificação e leitura do banco de registradores
@@ -206,7 +217,7 @@ class Pipeline3(
   val idRs1 = ifIdInstr(19, 15)
   val idRs2 = ifIdInstr(24, 20)
 
-  immGen.io.instr     := ifIdInstr
+  immGen.io.instr := ifIdInstr
   controller.io.opcode := ifIdInstr(6, 0)
   controller.io.funct3 := ifIdInstr(14, 12)
   controller.io.funct7 := ifIdInstr(31, 25)
@@ -225,28 +236,32 @@ class Pipeline3(
   val exOperandA = WireDefault(idEx.rs1Value)
   val exOperandB = WireDefault(idEx.rs2Value)
   switch(idEx.signals.operandASel) {
-    is(OperandASel.PC)   { exOperandA := idEx.pc }
+    is(OperandASel.PC) { exOperandA := idEx.pc }
     is(OperandASel.ZERO) { exOperandA := 0.U }
   }
   when(idEx.signals.operandBSel === OperandBSel.IMM) {
     exOperandB := idEx.imm
   }
 
-  ula.io.a  := exOperandA
-  ula.io.b  := exOperandB
+  ula.io.a := exOperandA
+  ula.io.b := exOperandB
   ula.io.op := idEx.signals.aluOp
 
   // Endereços de desvio
-  val jalrTarget       = ula.io.result & "hFFFFFFFE".U(32.W)
+  val jalrTarget = ula.io.result & "hFFFFFFFE".U(32.W)
   val pcRelativeTarget = (idEx.pc.asSInt + idEx.imm.asSInt).asUInt
 
   val branchTaken = WireDefault(false.B)
   switch(idEx.signals.branchType) {
-    is(BranchType.BEQ)  { branchTaken := idEx.rs1Value === idEx.rs2Value }
-    is(BranchType.BNE)  { branchTaken := idEx.rs1Value =/= idEx.rs2Value }
-    is(BranchType.BLT)  { branchTaken := idEx.rs1Value.asSInt <  idEx.rs2Value.asSInt }
-    is(BranchType.BGE)  { branchTaken := idEx.rs1Value.asSInt >= idEx.rs2Value.asSInt }
-    is(BranchType.BLTU) { branchTaken := idEx.rs1Value <  idEx.rs2Value }
+    is(BranchType.BEQ) { branchTaken := idEx.rs1Value === idEx.rs2Value }
+    is(BranchType.BNE) { branchTaken := idEx.rs1Value =/= idEx.rs2Value }
+    is(BranchType.BLT) {
+      branchTaken := idEx.rs1Value.asSInt < idEx.rs2Value.asSInt
+    }
+    is(BranchType.BGE) {
+      branchTaken := idEx.rs1Value.asSInt >= idEx.rs2Value.asSInt
+    }
+    is(BranchType.BLTU) { branchTaken := idEx.rs1Value < idEx.rs2Value }
     is(BranchType.BGEU) { branchTaken := idEx.rs1Value >= idEx.rs2Value }
   }
 
@@ -301,8 +316,17 @@ class Pipeline3(
   // ============================================================
   // 10. HAZARD DETECTION (load-use)
   // ============================================================
-  val currentUsesRd = (idRs1 === idEx.rd && idRs1 =/= 0.U) ||
-                      (idRs2 === idEx.rd && idRs2 =/= 0.U)
+  val idOpcode = ifIdInstr(6, 0)
+  val usesRs1 = idOpcode === Opcode.OP || idOpcode === Opcode.OP_IMM ||
+    idOpcode === Opcode.LOAD || idOpcode === Opcode.STORE ||
+    idOpcode === Opcode.BRANCH || idOpcode === Opcode.JALR ||
+    idOpcode === Opcode.ATOMIC ||
+    (idOpcode === Opcode.SYSTEM && controller.io.signals.csrOp =/= 0.U &&
+      !controller.io.signals.csrOp(2))
+  val usesRs2 = idOpcode === Opcode.OP || idOpcode === Opcode.STORE ||
+    idOpcode === Opcode.BRANCH || idOpcode === Opcode.ATOMIC
+  val currentUsesRd = (usesRs1 && idRs1 === idEx.rd && idRs1 =/= 0.U) ||
+    (usesRs2 && idRs2 === idEx.rd && idRs2 =/= 0.U)
   val isLoadInEx = idEx.valid &&
                    !misalignTrap &&
                    !idEx.signals.illegal &&
@@ -312,15 +336,16 @@ class Pipeline3(
                    idEx.signals.branchType === BranchType.NONE &&
                    !idEx.signals.jump &&
                    !idEx.signals.jalr
-  val loadUseHazard = isLoadInEx && currentUsesRd
+
+  val loadUseHazard = ifIdValid && !ifIdIllegal && isLoadInEx && currentUsesRd
   val hazardDetected = loadUseHazard
   hazardStall := hazardDetected && !cacheWait
 
   // ============================================================
   // 11. EXTENSÃO A: LR/SC e AMOs
   // ============================================================
-  val isLR  = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
-  val isSC  = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
+  val isLR = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
+  val isSC = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
   val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
   val scHasReservation = reservationValid && (reservationAddr === idEx.memAddress)
 
@@ -362,7 +387,7 @@ class Pipeline3(
   val writebackData = WireDefault(ula.io.result)
   switch(idEx.signals.writebackSel) {
     is(WritebackSel.MEM) { writebackData := cachedReadData }
-    is(WritebackSel.PC4) { writebackData := idEx.pc + 4.U }
+    is(WritebackSel.PC4) { writebackData := idEx.pc + idEx.instrLength }
     is(WritebackSel.IMM) { writebackData := idEx.imm }
     is(WritebackSel.CSR) { writebackData := idEx.csrReadData }
   }
@@ -380,8 +405,8 @@ class Pipeline3(
   // 12c. CSR forwarding
   val csrAddressEX = idEx.csrAddress
   val csrForwarding = idEx.valid && !idEx.signals.illegal &&
-                      idEx.signals.csrWrite &&
-                      (csrAddressID === csrAddressEX)
+    idEx.signals.csrWrite &&
+    (csrAddressID === csrAddressEX)
   val csrReadData = Mux(csrForwarding, idEx.csrWriteData, csr.io.read_data)
 
   // 12d. Forwarding de registradores (EX -> ID)
@@ -422,7 +447,7 @@ class Pipeline3(
                               idEx.signals.csrWrite &&
                               !clint.io.direct_write_enable
   csr.io.cpu_write_address := idEx.csrAddress
-  csr.io.cpu_write_data    := idEx.csrWriteData
+  csr.io.cpu_write_data := idEx.csrWriteData
 
   // ============================================================
   // 14. ACESSO À DCache E HANDSHAKE DAS CACHES
@@ -484,37 +509,36 @@ class Pipeline3(
   // ============================================================
   // 15. CONEXÃO AO BANCO DE REGISTRADORES (writeback)
   // ============================================================
-  regFile.io.rd        := idEx.rd
+  regFile.io.rd := idEx.rd
   regFile.io.writeData := writebackData
-  regFile.io.regWrite  := writebackEnable
+  regFile.io.regWrite := writebackEnable
 
   // ============================================================
   // 16. ATUALIZAÇÃO DOS REGISTRADORES DE PIPELINE
   // ============================================================
-  val pcNext = WireDefault(pcReg + 4.U)
+  val pcNext = WireDefault(pcReg)
   when(cacheWait || hazardStall) {
     pcNext := pcReg
   }.elsewhen(fenceIComplete) {
     // IF/ID pode conter uma instrução buscada antes da sincronização. Refaz o
-    // fetch a partir dela, agora que linhas dirty foram gravadas e a ICache
-    // foi invalidada.
-    pcNext := ifIdPc
+    // fetch a partir dela (se valida), agora que linhas dirty foram gravadas e
+    // a ICache foi invalidada.
+    pcNext := Mux(ifIdValid, ifIdPc, pcReg)
   } .elsewhen(takeAnyTrap) {
     pcNext := trapTarget
   } .elsewhen(takeRedirect) {
     pcNext := redirectTarget
+  }.elsewhen(fetch.io.valid) {
+    pcNext := pcReg + fetch.io.length
   }
 
   pcReg := pcNext
 
   when(cacheWait) {
-    // Miss de cache: congela o pipeline e guarda respostas que chegarem antes
-    // da outra cache, evitando repetir fetches ou stores ja atendidos.
+    // Miss de cache: congela o pipeline. A palavra de instrucao que chegar
+    // fica no buffer do InstructionFetch; o store/load ja atendido da DCache
+    // e guardado para nao ser repetido.
     lwWbValid := false.B
-    when(!fetchDone && l1Cache.io.iCache.hit) {
-      fetchDone := true.B
-      fetchData := l1Cache.io.iCache.readData
-    }
     when(dataCacheRequest && l1Cache.io.dCache.hit) {
       dataAccessDone := true.B
       dataAccessData := l1Cache.io.dCache.readData
@@ -526,73 +550,73 @@ class Pipeline3(
     lwWbData  := cachedReadData
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
     dataAccessDone := false.B
-    when(!fetchDone && l1Cache.io.iCache.hit) {
-      fetchDone := true.B
-      fetchData := l1Cache.io.iCache.readData
-    }
   } .elsewhen(fenceIComplete) {
     lwWbValid := false.B
-    ifIdPc    := ifIdPc
+    ifIdValid := false.B
+    ifIdIllegal := false.B
     ifIdInstr := nop
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
-    fetchDone := false.B
     dataAccessDone := false.B
   } .elsewhen(takeRedirect || takeAnyTrap) {
-    // FLUSH (desvio tomado ou trap de acesso desalinhado): insere NOP no IF/ID e limpa o ID/EX
+    // FLUSH (desvio/trap tomados): insere NOP no IF/ID e limpa o ID/EX
     lwWbValid := false.B
-    ifIdPc    := pcReg
+    ifIdValid := false.B
+    ifIdIllegal := false.B
     ifIdInstr := nop
     idEx      := 0.U.asTypeOf(new DecodeExecuteBundle)
-    fetchDone := false.B
     dataAccessDone := false.B
   } .otherwise {
     // ATUALIZAÇÃO NORMAL
     lwWbValid := false.B
-    ifIdPc    := pcReg
-    ifIdInstr := fetchedInstruction
-    fetchDone := false.B
+    ifIdPc := pcReg
+    ifIdInstr := fetch.io.instr
+    ifIdValid := fetch.io.valid
+    ifIdLength := fetch.io.length
+    ifIdIllegal := fetch.io.illegal
     dataAccessDone := false.B
 
-    idEx.valid        := true.B
-    idEx.pc           := ifIdPc
-    idEx.instr        := ifIdInstr
-    idEx.rs1          := idRs1
-    idEx.rs2          := idRs2
-    idEx.rd           := ifIdInstr(11, 7)
-    idEx.rs1Value     := forwardedRs1
-    idEx.rs2Value     := forwardedRs2
-    idEx.imm          := immGen.io.imm
-    idEx.memAddress   := decodedMemAddress
+    idEx.valid := ifIdValid
+    idEx.pc := ifIdPc
+    idEx.instr := ifIdInstr
+    idEx.instrLength := ifIdLength
+    idEx.rs1 := idRs1
+    idEx.rs2 := idRs2
+    idEx.rd := ifIdInstr(11, 7)
+    idEx.rs1Value := forwardedRs1
+    idEx.rs2Value := forwardedRs2
+    idEx.imm := immGen.io.imm
+    idEx.memAddress := decodedMemAddress
     idEx.memWriteData := forwardedRs2
-    idEx.signals      := controller.io.signals
-    idEx.csrAddress   := ifIdInstr(31, 20)
+    idEx.signals := controller.io.signals
+    idEx.signals.illegal := controller.io.signals.illegal || ifIdIllegal
+    idEx.csrAddress := ifIdInstr(31, 20)
     idEx.csrWriteData := csrWriteData
-    idEx.csrReadData  := csrReadData
+    idEx.csrReadData := csrReadData
   }
 
   // ============================================================
   // 17. SAÍDAS
   // ============================================================
-  io.pc              := pcReg
-  io.instr           := ifIdInstr
-  io.aluResult       := ula.io.result
-  io.writebackData   := writebackData
-  io.writebackRd     := writebackRd
+  io.pc := pcReg
+  io.instr := ifIdInstr
+  io.aluResult := ula.io.result
+  io.writebackData := writebackData
+  io.writebackRd := writebackRd
   io.writebackEnable := writebackEnable
-  io.illegal         := idEx.valid && idEx.signals.illegal
-  io.stalled         := stallPipeline
+  io.illegal := idEx.valid && idEx.signals.illegal
+  io.stalled := stallPipeline
 
   // Debug do CLINT
-  io.debug_clint_trap_assert       := clint.io.debug_trap_assert
-  io.debug_clint_trap_to_smode     := clint.io.debug_trap_to_smode
+  io.debug_clint_trap_assert := clint.io.debug_trap_assert
+  io.debug_clint_trap_to_smode := clint.io.debug_trap_to_smode
   io.debug_clint_delegate_to_smode := clint.io.debug_delegate_to_smode
-  io.debug_clint_exception_code    := clint.io.debug_exception_code
-  io.debug_clint_is_interrupt      := clint.io.debug_is_interrupt
-  io.debug_clint_trap_address      := clint.io.debug_trap_address
+  io.debug_clint_exception_code := clint.io.debug_exception_code
+  io.debug_clint_is_interrupt := clint.io.debug_is_interrupt
+  io.debug_clint_trap_address := clint.io.debug_trap_address
 
   // Debug do CSR forwarding
-  io.debug_csrReadData    := csrReadData
-  io.debug_csrForwarding  := csrForwarding
+  io.debug_csrReadData := csrReadData
+  io.debug_csrForwarding := csrForwarding
   io.debug_csr_address_id := csrAddressID
   io.debug_csr_address_ex := csrAddressEX
 }
