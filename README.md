@@ -20,23 +20,26 @@ sbt --version
 
 ## Estrutura atual
 
-- `src/main/scala/riscv/elementosbasicos/RV32I.scala`: constantes de opcode e seletores de controle RV32I.
-- `src/main/scala/riscv/elementosbasicos/Controller.scala`: decodificador/controlador combinacional para RV32I base.
-- `src/main/scala/riscv/elementosbasicos/ULA.scala`: ULA de 32 bits para operacoes aritmeticas/logicas RV32I.
-- `src/main/scala/riscv/elementosbasicos/ImmGen.scala`: gerador de imediatos I/S/B/U/J.
-- `src/main/scala/riscv/elementosbasicos/RegisterFile.scala`: banco de 32 registradores x 32 bits.
-- `src/main/scala/riscv/elementosbasicos/Memorias.scala`: memoria de instrucao por palavra e memoria de dados por byte.
-- `src/main/scala/riscv/elementosbasicos/CSR.scala`: banco de CSRs (`mstatus`, `mtvec`, `mepc`, `mcause`, `mtval` e equivalentes do modo S, entre outros).
-- `src/main/scala/riscv/elementosbasicos/CLINT.scala`: logica de traps e retornos (`ECALL`, `EBREAK`, `MRET`, `SRET`), interrupcao de timer, excecoes sincronas vindas do pipeline e delegacao M/S via `medeleg`.
-- `src/main/scala/riscv/elementosbasicos/RvcDecompressor.scala`: descompressor combinacional de instrucoes compactas (RVC) para RV32I de 32 bits.
-- `src/main/scala/riscv/elementosbasicos/GenerateRvcDecompressorVerilog.scala`: gera o Verilog do descompressor RVC.
-- `src/main/scala/riscv/cache/Cache.scala`: parametros e enderecamento (`CacheParams`, `CacheAddress`), arrays de dados/tags, LRU, a FSM da cache (`Cache`) e o `L1Cache`, que junta ICache + DCache e coordena o `FENCE.I`.
-- `src/main/scala/riscv/cache/CacheMainMemory.scala`: memoria principal simulada, compartilhada pelas duas caches, com latencia configuravel.
-- `src/main/scala/riscv/pipeline/InstructionFetch.scala`: estagio de busca com RVC. Pede palavras de 32 bits a ICache (com handshake por `memoryReady`), guarda a ultima palavra num buffer, monta instrucoes de 32 bits que cruzam o limite de palavra, expande as de 16 bits com o `RvcDecompressor` e informa o tamanho (2 ou 4 bytes) para avancar o PC.
-- `src/main/scala/riscv/pipeline/Pipeline3.scala`: top-level do pipeline RV32I (com extensoes A e C e multiplicacao) em 3 estagios, integrando `InstructionFetch`, controlador, CSR/CLINT, `L1Cache` e `CacheMainMemory`.
-- `src/main/scala/riscv/pipeline/GeneratePipeline3Verilog.scala`: gera o Verilog do `Pipeline3` (ver a secao de simulacao).
-- `src/test/scala/riscv/`: testes com ScalaTest + chiseltest: `unit/` (blocos isolados, incluindo `fetch/`), `cache/` (cache e memoria principal), `integration/` (pipeline completo: programas, traps, RV32I, RVC), `pipeline/` (acesso desalinhado) e `diagnostics/`
-- `build.sbt`: dependencias e configuracoes do build
+O codigo de producao fica em `src/main/scala/riscv/`, um pacote por bloco funcional. Os testes em `src/test/scala/riscv/` seguem a mesma organizacao.
+
+| Pacote | Arquivos | Conteudo |
+| --- | --- | --- |
+| `riscv.decode` | `RV32I.scala`, `Controller.scala`, `ImmGen.scala` | Constantes de opcode e seletores de controle (`RV32I`, incluindo `AMOOp`/`AMOFunct5`), decodificador/controlador combinacional (`Controller`, `ControlSignals`; valida, por exemplo, `rs2 = 0` em `LR.W`) e gerador de imediatos I/S/B/U/J. |
+| `riscv.execute` | `ULA.scala` | ULA de 32 bits (`ALUOp`, `ULA`): aritmetica/logica RV32I e multiplicacao. |
+| `riscv.registers` | `RegisterFile.scala` | Banco de 32 registradores x 32 bits. |
+| `riscv.privileged` | `CSR.scala`, `CLINT.scala` | Banco de CSRs (`mstatus`, `mtvec`, `mepc`, `mcause`, `mtval` e equivalentes do modo S, entre outros) e logica de traps/retornos (`ECALL`, `EBREAK`, `MRET`, `SRET`), excecoes sincronas vindas do pipeline e delegacao M/S via `medeleg`. |
+| `riscv.compressed` | `RvcDecompressor.scala`, `GenerateRvcDecompressorVerilog.scala` | Descompressor combinacional de instrucoes compactas (RVC) para RV32I de 32 bits e gerador do seu Verilog. |
+| `riscv.atomic` | `AmoAlu.scala`, `ReservationUnit.scala` | ALU dos `AMO*.W` (valor a gravar a partir do valor antigo e de `rs2`) e reserva de `LR.W`/`SC.W` (estabelece, consome e invalida a reserva). |
+| `riscv.cache` | `CacheParams.scala`, `CacheIO.scala`, `CacheArrays.scala`, `CacheLru.scala`, `Cache.scala`, `L1Cache.scala`, `CacheMainMemory.scala` | Geometria e enderecamento (`CacheParams`, `CacheAddress`), interfaces CPU-cache e cache-memoria, arrays de dados/tags, LRU, a FSM da cache (`Cache`), o `L1Cache` (ICache + DCache e coordenacao do `FENCE.I`) e a memoria principal simulada, compartilhada pelas duas caches, com latencia configuravel. |
+| `riscv.pipeline` | `InstructionFetch.scala`, `Pipeline3.scala`, `GeneratePipeline3Verilog.scala` | Estagio de busca com RVC (pede palavras de 32 bits a ICache com handshake por `memoryReady`, guarda a ultima palavra num buffer, monta instrucoes de 32 bits que cruzam o limite de palavra, expande as de 16 bits e informa o tamanho, 2 ou 4 bytes, para avancar o PC); top-level do pipeline RV32I (com extensoes A e C e multiplicacao) em 3 estagios, integrando `InstructionFetch`, controlador, CSR/CLINT, `AmoAlu`, `ReservationUnit`, `L1Cache` e `CacheMainMemory`; e o gerador de Verilog do `Pipeline3` (ver a secao de simulacao). |
+
+Testes (ScalaTest + chiseltest) em `src/test/scala/riscv/`:
+
+- `unit/`: blocos isolados, em subpastas que espelham os pacotes acima (`decode/`, `execute/`, `registers/`, `privileged/`, `compressed/`, `atomic/`) e `fetch/` para o `InstructionFetch`.
+- `cache/`: cache, LRU, arrays, FSM, latencia e memoria principal.
+- `integration/`: pipeline completo: `pipeline/` (programas e acesso desalinhado), `privileged/` (traps), `rv32i/`, `rv32c/`, `blackbox/`, `diagnostics/` e `support/` (helpers compartilhados).
+
+Outros arquivos: `build.sbt` (dependencias e configuracoes do build) e `.github/workflows/ci.yml` (CI).
 
 ## Como rodar o projeto
 
@@ -61,7 +64,7 @@ sbt test
 Rode apenas o teste da ULA:
 
 ```bash
-sbt "testOnly riscv.ULATest"
+sbt "testOnly riscv.unit.execute.ULATest"
 ```
 
 ## CI e formatacao
@@ -283,7 +286,7 @@ gtkwave pipeline.vcd &
 
 ## Fluxo recomendado no dia a dia
 
-1. Editar o modulo em `src/main/scala/riscv/elementosbasicos/`.
+1. Editar o modulo no pacote correspondente em `src/main/scala/riscv/` (ver "Estrutura atual").
 2. Rodar `sbt scalafmtAll`.
 3. Rodar `sbt scalafmtCheckAll test`.
 
@@ -292,7 +295,7 @@ gtkwave pipeline.vcd &
 - A ULA cobre as operacoes exigidas por `OP` e `OP-IMM`: `ADD`, `SUB`, `SLL`, `SLT`, `SLTU`, `XOR`, `SRL`, `SRA`, `OR`, `AND`.
 - O controlador reconhece os opcodes RV32I usados pelo pipeline inicial: `LUI`, `AUIPC`, `JAL`, `JALR`, branches, loads, stores, `OP-IMM` e `OP`.
 - Loads/stores ja saem do controlador com tamanho (`byte`, `half`, `word`) e sinalizacao de extensao sem sinal para `LBU`/`LHU`.
-- `DataMemory` suporta `LB`, `LH`, `LW`, `LBU`, `LHU`, `SB`, `SH` e `SW` em memoria byte-addressable.
+- A `DCache` suporta `LB`, `LH`, `LW`, `LBU`, `LHU`, `SB`, `SH` e `SW` (acesso por byte, meia palavra e palavra, com extensao de sinal nos loads).
 - Alem do RV32I base, o projeto tem a ULA com multiplicacao (`MUL`, `MULH`, `MULHSU`, `MULHU`), as atomicas `LR.W`, `SC.W` e `AMO*.W`, e o RVC (instrucoes de 16 bits expandidas no `InstructionFetch`).
 - Acessos desalinhados nao tem suporte por hardware: geram trap precisa no estagio EX, antes da DCache (ver a secao "Pipeline inicial").
 

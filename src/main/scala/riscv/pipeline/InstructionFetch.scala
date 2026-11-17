@@ -2,7 +2,7 @@ package riscv.pipeline
 
 import chisel3._
 import chisel3.util._
-import riscv.elementosbasicos.RvcDecompressor
+import riscv.compressed.RvcDecompressor
 
 /** Busca RV32 com RVC e um buffer de palavra, antes do decode.
   *

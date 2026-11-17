@@ -2,9 +2,12 @@ package riscv.pipeline
 
 import chisel3._
 import chisel3.util._
-import riscv.elementosbasicos._
+import riscv.atomic.{AmoAlu, ReservationUnit}
 import riscv.cache._
-import riscv._
+import riscv.decode.{ControlSignals, Controller, ImmGen, RV32I}
+import riscv.execute.ULA
+import riscv.privileged.{CLINT, CSR, InterruptCode}
+import riscv.registers.RegisterFile
 
 // ============================================================
 // BUNDLE: registradores do estágio ID/EX
@@ -92,6 +95,8 @@ class Pipeline3(
   val immGen     = Module(new ImmGen)
   val controller = Module(new Controller)
   val ula = Module(new ULA)
+  val amoAlu = Module(new AmoAlu)
+  val reservation = Module(new ReservationUnit)
   val csr = Module(new CSR)
   val clint = Module(new CLINT)
 
@@ -115,9 +120,7 @@ class Pipeline3(
   val dataAccessDone = RegInit(false.B)
   val dataAccessData = RegInit(0.U(32.W))
 
-  // Mecanismo de reserva para LR/SC
-  val reservationAddr = RegInit(0.U(32.W))
-  val reservationValid = RegInit(false.B)
+  // A reserva de LR/SC fica no ReservationUnit (ver secao 11).
 
   // ============================================================
   // 3. SINAIS DE CONTROLE DE FLUXO
@@ -152,14 +155,12 @@ class Pipeline3(
   clint.io.current_priv := csr.io.current_priv
 
   // ============================================================
-  // 5. INTERRUPÇÕES (a implementar)
+  // 5. INTERRUPÇÕES (sem fonte ligada)
   // ============================================================
-  val timer_interrupt = WireDefault(false.B)
+  // Nao ha fonte de interrupcao externa/timer ligada ainda: o CLINT recebe
+  // sempre `None`. Quando houver (mtime/mtimecmp ou PLIC), basta dirigir este
+  // fio com o codigo correspondente (ex.: InterruptCode.Timer0).
   val interrupt_flag = WireDefault(InterruptCode.None)
-
-  when(timer_interrupt) {
-    interrupt_flag := InterruptCode.Timer0
-  }
 
   // ECALL/EBREAK/MRET/SRET sao resolvidos no EX (ver secao 9c): o CLINT
   // recebe PC e instrucao do EX e `valid` fica alto por UM unico ciclo, o
@@ -347,38 +348,22 @@ class Pipeline3(
   val isLR = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
   val isSC = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
   val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
-  val scHasReservation = reservationValid && (reservationAddr === idEx.memAddress)
+  val scHasReservation = reservation.io.hasReservation
 
-  // LR: estabelece reserva
-  when(isLR && exCanCommit) {
-    reservationAddr  := idEx.memAddress
-    reservationValid := true.B
-  }
+  // Eventos de reserva (ver ReservationUnit para a prioridade entre eles):
+  //   LR      -> estabelece a reserva
+  //   SC      -> consome a reserva; so tem sucesso se ela cobre o endereco
+  //   AMO     -> invalida a reserva
+  //   escrita -> qualquer escrita no endereco reservado invalida a reserva
+  //   ilegal  -> instrucao ilegal / trap invalida a reserva
+  reservation.io.addr := idEx.memAddress
+  reservation.io.lrCommit := isLR && exCanCommit
+  reservation.io.scCommit := isSC && exCanCommit
+  reservation.io.amoCommit := isAMO && exCanCommit
+  reservation.io.storeHit := l1Cache.io.dCache.hit && idEx.signals.memWrite
+  reservation.io.invalidate := io.illegal || idEx.signals.illegal
 
-  // SC: verifica e escreve condicionalmente
-  val scSuccess = WireDefault(false.B)
-  when(isSC && exCanCommit) {
-    scSuccess := reservationValid && (reservationAddr === idEx.memAddress)
-    reservationValid := false.B
-  }
-
-  // AMO: invalida reserva
-  when(isAMO && exCanCommit) {
-    reservationValid := false.B
-  }
-
-  // Qualquer escrita no endereço reservado invalida a reserva
-  when(
-    l1Cache.io.dCache.hit && idEx.signals.memWrite &&
-      (idEx.memAddress === reservationAddr)
-  ) {
-    reservationValid := false.B
-  }
-
-  // Interrupções invalidam a reserva
-  when(io.illegal || idEx.signals.illegal) {
-    reservationValid := false.B
-  }
+  val scSuccess = isSC && exCanCommit && scHasReservation
 
   // ============================================================
   // 12. FORWARDING (registradores e CSR)
@@ -466,36 +451,10 @@ class Pipeline3(
 
   cachedReadData := Mux(dataAccessDone, dataAccessData, l1Cache.io.dCache.readData)
 
-  val amoWriteData = WireDefault(idEx.memWriteData)
-  when(isAMO) {
-    switch(idEx.signals.amoOp) {
-      is(AMOOp.SWAP) { amoWriteData := idEx.memWriteData }
-      is(AMOOp.ADD)  { amoWriteData := cachedReadData + idEx.memWriteData }
-      is(AMOOp.AND)  { amoWriteData := cachedReadData & idEx.memWriteData }
-      is(AMOOp.OR)   { amoWriteData := cachedReadData | idEx.memWriteData }
-      is(AMOOp.XOR)  { amoWriteData := cachedReadData ^ idEx.memWriteData }
-      is(AMOOp.MAX) {
-        amoWriteData := Mux(
-          cachedReadData.asSInt > idEx.memWriteData.asSInt,
-          cachedReadData,
-          idEx.memWriteData
-        )
-      }
-      is(AMOOp.MIN) {
-        amoWriteData := Mux(
-          cachedReadData.asSInt < idEx.memWriteData.asSInt,
-          cachedReadData,
-          idEx.memWriteData
-        )
-      }
-      is(AMOOp.MAXU) {
-        amoWriteData := Mux(cachedReadData > idEx.memWriteData, cachedReadData, idEx.memWriteData)
-      }
-      is(AMOOp.MINU) {
-        amoWriteData := Mux(cachedReadData < idEx.memWriteData, cachedReadData, idEx.memWriteData)
-      }
-    }
-  }
+  amoAlu.io.op := idEx.signals.amoOp
+  amoAlu.io.memData := cachedReadData
+  amoAlu.io.operand := idEx.memWriteData
+  val amoWriteData = Mux(isAMO, amoAlu.io.result, idEx.memWriteData)
   l1Cache.io.dCache.writeData := amoWriteData
 
   val dataWait = dataCacheRequest && !l1Cache.io.dCache.hit

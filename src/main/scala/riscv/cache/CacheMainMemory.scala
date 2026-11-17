@@ -24,8 +24,8 @@ import chisel3.util.experimental.loadMemoryFromFileInline
     * ficam sem ready e disparam assert em simulacao. Como CacheMemIO nao possui
     * canal de erro, um pedido fora da capacidade permanece aguardando.
   *
-  * `initialData` e `programFile` usam palavras de 32 bits, na mesma ordem da
-  * InstructionMemory. Assim, programa e dados ocupam o mesmo espaco de
+  * `initialData` e `programFile` usam palavras de 32 bits, na ordem do
+  * programa (palavra 0 = endereco 0). Assim, programa e dados ocupam o mesmo espaco de
   * enderecos. Para inicializacao por arquivo, cada linha do arquivo segue o
   * formato hex aceito por loadMemoryFromFileInline.
   */

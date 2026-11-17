@@ -1,8 +1,8 @@
-package riscv.pipeline
+package riscv.privileged
 
 import chisel3._
 import chisel3.util._
-import riscv.elementosbasicos.RV32I
+import riscv.decode.RV32I
 
 object InterruptCode {
   val None = 0x0.U(8.W)

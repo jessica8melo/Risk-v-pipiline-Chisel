@@ -3,9 +3,9 @@ package riscv.unit.privileged
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
-import riscv.pipeline.{CLINT, InterruptCode}
-import riscv.elementosbasicos.RV32I
-import riscv.elementosbasicos.RV32I._
+import riscv.decode.RV32I
+import riscv.decode.RV32I._
+import riscv.privileged.{CLINT, InterruptCode}
 
 class CLINTSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "CLINT"

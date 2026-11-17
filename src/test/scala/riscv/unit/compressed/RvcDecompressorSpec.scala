@@ -3,7 +3,7 @@ package riscv.unit.compressed
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
-import riscv.elementosbasicos.RvcDecompressor
+import riscv.compressed.RvcDecompressor
 
 /** Wrapper de teste para acomodar o RvcDecompressor (RawModule) dentro do
   * ChiselScalatestTester, que exige [T <: Module]. O RvcDecompressor permanece

@@ -2,8 +2,8 @@ package riscv.integration.support
 
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
-import riscv.pipeline.Pipeline3
 import scala.collection.mutable.ArrayBuffer
+import riscv.pipeline.Pipeline3
 
 /** Binding point for the core under test; keep this module's public interface
   * stable.

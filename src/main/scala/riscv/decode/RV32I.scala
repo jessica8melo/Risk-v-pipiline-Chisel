@@ -1,4 +1,4 @@
-package riscv.elementosbasicos
+package riscv.decode
 
 import chisel3._
 

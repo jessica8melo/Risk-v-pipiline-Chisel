@@ -3,7 +3,7 @@ package riscv.unit.decode
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
-import riscv.elementosbasicos.ImmGen
+import riscv.decode.ImmGen
 
 class ImmGenTest extends AnyFlatSpec with ChiselScalatestTester {
 

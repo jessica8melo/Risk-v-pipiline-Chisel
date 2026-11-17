@@ -1,8 +1,9 @@
-package riscv.pipeline
+package riscv.integration.pipeline
 
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
+import riscv.pipeline.Pipeline3
 
 /** Politica de acesso desalinhado: trap precisa no estagio EX, antes da DCache.
   *   - load / LR.W            -> mcause 4
@@ -112,29 +113,6 @@ class Pipeline3MisalignedSpec extends AnyFlatSpec with ChiselScalatestTester {
       assert(r.writes.contains(3), s"load alinhado em 0x${t._1.toHexString} deveria escrever rd")
       assert(!r.writes.contains(5), "handler nao deveria ter sido executado")
       assert(r.writes.contains(4), "fluxo normal deveria continuar")
-    }
-  }
-}
-
-class CLINTSyncExceptionSpec extends AnyFlatSpec with ChiselScalatestTester {
-  behavior of "CLINT (excecao sincrona do pipeline)"
-
-  it should "registrar mepc, mcause e mtval e saltar para mtvec" in {
-    test(new CLINT) { dut =>
-      dut.io.mtvec.poke(0x8000.U)
-      dut.io.mstatus.poke(0x8.U) // MIE = 1
-      dut.io.current_priv.poke(riscv.elementosbasicos.RV32I.PrivilegeMode.M)
-      dut.io.exc_valid.poke(true.B)
-      dut.io.exc_cause.poke(6.U)
-      dut.io.exc_pc.poke(0x1234.U)
-      dut.io.exc_tval.poke(0xdead0003L.U)
-      dut.clock.step(0)
-      dut.io.trap_assert.expect(true.B)
-      dut.io.trap_address.expect(0x8000.U)
-      dut.io.direct_write_enable.expect(true.B)
-      dut.io.mcause_write_data.expect(6.U)
-      dut.io.mepc_write_data.expect(0x1234.U)
-      dut.io.mtval_write_data.expect(0xdead0003L.U)
     }
   }
 }

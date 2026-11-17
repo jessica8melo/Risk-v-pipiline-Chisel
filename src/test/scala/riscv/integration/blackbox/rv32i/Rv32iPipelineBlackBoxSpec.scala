@@ -2,8 +2,8 @@ package riscv.integration.blackbox.rv32i
 
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
-import riscv.integration.support.Rv32iBlackBox
 import scala.collection.mutable.ArrayBuffer
+import riscv.integration.support.Rv32iBlackBox
 
 class Rv32iPipelineBlackBoxSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "Processador RV32I pela interface pública"

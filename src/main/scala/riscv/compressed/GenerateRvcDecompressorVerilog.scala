@@ -1,4 +1,4 @@
-package riscv.elementosbasicos
+package riscv.compressed
 
 import chisel3.stage.ChiselStage
 

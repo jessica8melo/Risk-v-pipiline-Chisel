@@ -1,4 +1,4 @@
-package riscv.diagnostics
+package riscv.integration.diagnostics
 
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
@@ -7,7 +7,7 @@ import scala.io.Source
 import riscv.integration.support.Rv32iBlackBox
 
 /** RV32I_HEX=program.hex RV32I_CYCLES=40 sbt 'testOnly
-  * riscv.diagnostics.Rv32iHexTraceSpec'
+  * riscv.integration.diagnostics.Rv32iHexTraceSpec'
   */
 class Rv32iHexTraceSpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "saídas arquiteturais de um programa HEX"

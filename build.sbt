@@ -1,4 +1,4 @@
-name := "aprendendo-tcc"
+name := "riscv-pipeline-chisel"
 version := "0.1.0"
 scalaVersion := "2.13.14"
 
