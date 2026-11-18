@@ -48,7 +48,8 @@ class DecodeExecuteBundle extends Bundle {
 class Pipeline3(
     initialProgram: Seq[Long] = Seq.empty,
     memoryWords: Int = 1024,
-    programFile: String = ""
+    programFile: String = "",
+    memoryLatency: Int = 0
 ) extends Module {
   val io = IO(new Bundle {
     val pc = Output(UInt(32.W))
@@ -87,7 +88,8 @@ class Pipeline3(
     new CacheMainMemory(
       depthWords = memoryWords,
       initialData = initialProgram,
-      programFile = programFile
+      programFile = programFile,
+      latency = memoryLatency
     )
   )
   l1Cache.io.iMem <> mainMemory.io.iMem
