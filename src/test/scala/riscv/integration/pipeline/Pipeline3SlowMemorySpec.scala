@@ -11,8 +11,8 @@ import riscv.pipeline.Pipeline3
   *
   * Exercita o `cacheWait` segurando o pipeline: misses de ICache a cada linha,
   * misses de DCache, load-use depois de miss, LR/SC e AMO com miss e traps de
-  * desalinhamento chegando enquanto a busca da proxima instrucao ainda espera
-  * a memoria. Todos os cenarios rodam num unico programa (uma compilacao por
+  * desalinhamento chegando enquanto a busca da proxima instrucao ainda espera a
+  * memoria. Todos os cenarios rodam num unico programa (uma compilacao por
   * latencia) e a latencia 0 serve de controle: se um cenario falha nas duas, o
   * erro e do teste; se so falha na lenta, e do pipeline/cache.
   */
@@ -115,8 +115,8 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
   )
 
   private def nameOf(s: Any): String = s match {
-    case p: Plain     => p.name
-    case t: Trapping  => t.name
+    case p: Plain    => p.name
+    case t: Trapping => t.name
   }
   private def idx(name: String): Int = scenarios.indexWhere(nameOf(_) == name)
 
@@ -148,7 +148,10 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
     }
     out += jal0
     for (_ <- 0 until 3) out += NOP
-    require(pc == handlerPc || handlerPc == 0, s"handler em 0x${pc.toHexString}")
+    require(
+      pc == handlerPc || handlerPc == 0,
+      s"handler em 0x${pc.toHexString}"
+    )
     out ++= Seq(
       csrrs(5, 0x342, 0), // x5 = mcause
       csrrs(7, 0x343, 0), // x7 = mtval
@@ -210,15 +213,26 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
   private def writesOf(latency: Int, name: String, rd: Int): Seq[BigInt] =
     segment(latency, name).collect { case (`rd`, d) => d }
 
-  private def expectTrap(latency: Int, name: String, cause: Int, tval: Int): Unit = {
+  private def expectTrap(
+      latency: Int,
+      name: String,
+      cause: Int,
+      tval: Int
+  ): Unit = {
     assert(writesOf(latency, name, 5) == Seq(BigInt(cause)), s"$name: mcause")
     assert(writesOf(latency, name, 7) == Seq(BigInt(tval)), s"$name: mtval")
     assert(
       writesOf(latency, name, 8) == Seq(BigInt(built.testedPc(name))),
       s"$name: mepc (esperado 0x${built.testedPc(name).toHexString})"
     )
-    assert(writesOf(latency, name, 3).isEmpty, s"$name: rd nao pode ser escrito")
-    assert(writesOf(latency, name, 4).isEmpty, s"$name: instrucao apos o trap executou")
+    assert(
+      writesOf(latency, name, 3).isEmpty,
+      s"$name: rd nao pode ser escrito"
+    )
+    assert(
+      writesOf(latency, name, 4).isEmpty,
+      s"$name: instrucao apos o trap executou"
+    )
   }
 
   // ---- testes -----------------------------------------------------------
@@ -244,10 +258,19 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
 
     it should s"fazer LR/SC com sucesso e SC sem reserva falhar sem gravar (latencia $lat)" in {
       assert(writesOf(lat, "lr-sc", 3) == Seq(BigInt(0)))
-      assert(writesOf(lat, "lr-sc", 4) == Seq(BigInt(0)), "SC com reserva deve devolver 0")
+      assert(
+        writesOf(lat, "lr-sc", 4) == Seq(BigInt(0)),
+        "SC com reserva deve devolver 0"
+      )
       assert(writesOf(lat, "lr-sc", 5) == Seq(BigInt(0x77)))
-      assert(writesOf(lat, "sc-sem-reserva", 4) == Seq(BigInt(1)), "SC sem LR deve devolver 1")
-      assert(writesOf(lat, "sc-sem-reserva", 5) == Seq(BigInt(0)), "SC falho nao pode gravar")
+      assert(
+        writesOf(lat, "sc-sem-reserva", 4) == Seq(BigInt(1)),
+        "SC sem LR deve devolver 1"
+      )
+      assert(
+        writesOf(lat, "sc-sem-reserva", 5) == Seq(BigInt(0)),
+        "SC falho nao pode gravar"
+      )
     }
 
     it should s"tomar trap de desalinhamento com a busca seguinte ainda em miss (latencia $lat)" in {
