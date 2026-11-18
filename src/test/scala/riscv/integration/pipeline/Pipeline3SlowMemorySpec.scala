@@ -38,6 +38,25 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
       (rd.toLong << 7) | 0x2fL
   private def jalr(rd: Int, rs1: Int, imm: Int): Long =
     ((imm & 0xfff).toLong << 20) | (rs1.toLong << 15) | (rd.toLong << 7) | 0x67L
+  private def lui(rd: Int, imm20: Int): Long =
+    ((imm20 & 0xfffff).toLong << 12) | (rd.toLong << 7) | 0x37L
+  private def jal(rd: Int, off: Int): Long =
+    (((off >> 20) & 1).toLong << 31) | (((off >> 1) & 0x3ff).toLong << 21) |
+      (((off >> 11) & 1).toLong << 20) | (((off >> 12) & 0xff).toLong << 12) |
+      (rd.toLong << 7) | 0x6fL
+  private val FENCE_I = 0x0000100fL
+  // RVC: c.addi rd, imm (c.nop = c.addi x0, 0) e parcelas de 16 bits
+  private def cAddi(rd: Int, imm: Int): Int =
+    (((imm >> 5) & 1) << 12) | (rd << 7) | ((imm & 0x1f) << 2) | 0x1
+  private val cNop = cAddi(0, 0)
+  private def cLi(rd: Int, imm: Int): Int = // c.li rd, imm
+    (0x2 << 13) | (((imm >> 5) & 1) << 12) | (rd << 7) | ((imm & 0x1f) << 2) | 0x1
+  private def parcels32(i: Long): Seq[Int] =
+    Seq((i & 0xffff).toInt, ((i >> 16) & 0xffff).toInt)
+  private def packParcels(p: Seq[Int]): Seq[Long] = {
+    require(p.size % 2 == 0, "numero impar de parcelas")
+    p.grouped(2).map(g => (g(0) & 0xffffL) | ((g(1) & 0xffffL) << 16)).toSeq
+  }
   private val NOP = 0x00000013L
   private val jal0 = 0x0000006fL // jal x0, 0
 
@@ -67,8 +86,8 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
       offset: Int
   )
 
-  /** LR.W (carrega a linha na DCache e reserva) + SC.W alinhado em `offset`.
-    * O hit da DCache do SC pode cair no meio de um miss da ICache (busca das
+  /** LR.W (carrega a linha na DCache e reserva) + SC.W alinhado em `offset`. O
+    * hit da DCache do SC pode cair no meio de um miss da ICache (busca das
     * instrucoes seguintes), quando `exCanCommit` ainda e falso: a reserva nao
     * pode ser apagada pelo proprio SC antes do commit.
     */
@@ -80,6 +99,61 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
       Seq(lw(5, 2, 0)),
       offset
     )
+
+  /** Cenario gerado a partir do PC onde comeca (alinhado a `align` bytes). */
+  private case class Placed(name: String, align: Int, build: Int => Seq[Long])
+
+  /** RVC cruzando linhas de cache. Comeca alinhado a 16 bytes; instrucoes de 32
+    * bits nos offsets 14, 30 e 110 (PC % 16 == 14) ocupam duas linhas, entao a
+    * segunda metade so chega depois de um miss de ICache. O trecho final e
+    * alcancado por jalr (redirect para PC % 16 == 14 com a ICache fria).
+    */
+  private val rvcTargetOffset = 0x6e
+  private def rvcCross(start: Int): Seq[Long] = {
+    val p = scala.collection.mutable.ArrayBuffer.empty[Int]
+    p += cLi(10, 0) // x10 = 0 (os cenarios anteriores deixam lixo em x10)
+    for (_ <- 0 until 6) p += cAddi(10, 1) // x10 = 1..6, termina no offset 14
+    p ++= parcels32(addi(11, 0, 0x2a)) // cruza a fronteira da linha (14..17)
+    for (_ <- 0 until 6) p += cAddi(10, 1) // x10 = 7..12, termina no offset 30
+    p ++= parcels32(addi(12, 0, 0x3b)) // cruza a fronteira da linha (30..33)
+    p ++= parcels32(addi(2, 0, start + rvcTargetOffset))
+    p ++= parcels32(jalr(0, 2, 0)) // redirect para o offset 0x6e
+    while (p.size * 2 < rvcTargetOffset) p += cNop // nunca executado
+    p ++= parcels32(addi(13, 0, 0x55)) // 0x6e..0x71: cruza a linha
+    if (p.size % 2 != 0) p += cNop
+    packParcels(p.toSeq)
+  }
+
+  /** Codigo automodificavel: chama a sub-rotina em T, troca a instrucao dela
+    * com SW (linha suja na DCache), FENCE.I e chama de novo. Sem o flush da
+    * DCache e a invalidacao da ICache o 2o chamado devolveria o valor velho.
+    */
+  private def fenceISmc(start: Int): Seq[Long] = {
+    val newInstr = addi(5, 0, 2) // 0x00200293
+    require(
+      (newInstr & 0xfff) < 0x800,
+      "addi do imediato nao pode vir negativo"
+    )
+    val head = 8 // palavras antes do preenchimento
+    val pad = ((16 - (start + head * 4) % 16) % 16) / 4
+    val t = start + (head + pad) * 4 // sub-rotina alinhada a uma linha
+    val skip = (t + 16) - (start + (head - 1) * 4) // jal sobre a linha de T
+    Seq(
+      lui(6, (newInstr >> 12).toInt),
+      addi(6, 6, (newInstr & 0xfff).toInt),
+      addi(2, 0, t),
+      jalr(1, 2, 0), // 1a chamada: x5 = 1
+      sw(6, 2, 0), // reescreve addi x5,x0,1 -> addi x5,x0,2
+      FENCE_I,
+      jalr(1, 2, 0), // 2a chamada: x5 = 2
+      jal(0, skip)
+    ) ++ Seq.fill(pad)(NOP) ++ Seq(
+      addi(5, 0, 1), // T
+      jalr(0, 1, 0),
+      NOP,
+      NOP
+    )
+  }
 
   private val DataAddr = 0x300 // regiao de dados, longe do codigo
   private val ChainSums = Seq(1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 66, 78)
@@ -136,17 +210,24 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
     Trapping("trap-lw", Seq(addi(2, 0, 0x361)), lw(3, 2, 0)),
     Trapping("trap-sw", Seq(addi(2, 0, 0x362), addi(6, 0, 0x99)), sw(6, 2, 0)),
     Plain("sw-nao-escreveu", Seq(addi(2, 0, 0x360), lw(3, 2, 0))),
-    Trapping("trap-amo", Seq(addi(2, 0, 0x372), addi(6, 0, 1)), amoadd(3, 2, 6)),
+    Trapping(
+      "trap-amo",
+      Seq(addi(2, 0, 0x372), addi(6, 0, 1)),
+      amoadd(3, 2, 6)
+    ),
     scAt(0, 0x380),
     scAt(4, 0x390),
     scAt(8, 0x3a0),
-    scAt(12, 0x3b0)
+    scAt(12, 0x3b0),
+    Placed("rvc-cruza-linha", 16, rvcCross),
+    Placed("fence-i-smc", 4, fenceISmc)
   )
 
   private def nameOf(s: Any): String = s match {
-    case p: Plain    => p.name
-    case t: Trapping => t.name
+    case p: Plain     => p.name
+    case t: Trapping  => t.name
     case a: AlignedAt => a.name
+    case x: Placed    => x.name
   }
   private def idx(name: String): Int = scenarios.indexWhere(nameOf(_) == name)
 
@@ -162,6 +243,10 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
     for ((sc, k) <- scenarios.zipWithIndex) sc match {
       case Plain(_, code) =>
         out ++= code
+        out += addi(9, 0, k + 1)
+      case Placed(_, align, build) =>
+        while (pc % align != 0) out += NOP
+        out ++= build(pc)
         out += addi(9, 0, k + 1)
       case AlignedAt(_, pre, tested, post, offset) =>
         out ++= pre
@@ -322,6 +407,27 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
           s"$n: SC com sucesso deve ter gravado 0x77"
         )
       }
+    }
+
+    it should s"executar RVC cruzando fronteiras de linha com miss de ICache (latencia $lat)" in {
+      val n = "rvc-cruza-linha"
+      assert(
+        writesOf(lat, n, 10) == (0 to 12).map(BigInt(_)),
+        "x10 deve contar 0..12 sem perder nem repetir c.li/c.addi"
+      )
+      assert(writesOf(lat, n, 11) == Seq(BigInt(0x2a)), "32 bits em PC%16==14")
+      assert(writesOf(lat, n, 12) == Seq(BigInt(0x3b)), "32 bits em PC%16==14")
+      assert(
+        writesOf(lat, n, 13) == Seq(BigInt(0x55)),
+        "32 bits cruzando linha apos redirect com ICache fria"
+      )
+    }
+
+    it should s"ver codigo reescrito apos FENCE.I (flush da DCache + invalidacao da ICache) (latencia $lat)" in {
+      assert(
+        writesOf(lat, "fence-i-smc", 5) == Seq(BigInt(1), BigInt(2)),
+        "1a chamada deve dar 1 e, depois do FENCE.I, a 2a deve dar 2"
+      )
     }
 
     it should s"tomar trap de desalinhamento com a busca seguinte ainda em miss (latencia $lat)" in {
