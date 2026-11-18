@@ -14,7 +14,8 @@ import chisel3.util._
   * load/store) sCompareTag --miss, vitima suja--> sWriteBack sCompareTag
   * --miss, vitima limpa/invalida--> sAllocate sWriteBack --mem.ready-->
   * sAllocate (despeja a linha suja) sAllocate --mem.ready--> sCompareTag
-  * (preenche a linha e reavalia)
+  * (preenche a linha e reavalia) sWriteBack/sAllocate --mem.fault--> sFault
+  * (io.cpu.fault = 1 ate a CPU derrubar o pedido; os arrays nao mudam)
   *
   * Contrato com a CPU: enquanto `stall` = 1 a CPU deve manter o pedido
   * (request/write/address/...) estavel, porque o controlador le o endereco
@@ -31,6 +32,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
     val mem = new CacheMemIO
     val flushDirty = Input(Bool())
     val flushDone = Output(Bool())
+    // 1 (nivel, valido junto com flushDone) se um write-back do flush foi
+    // recusado pela memoria: o flush foi abortado e ainda ha linhas sujas.
+    val flushFault = Output(Bool())
     val invalidateAll = Input(Bool())
     // Observabilidade para testes (validos no ciclo em que hit = 1).
     val dbg = Output(new Bundle {
@@ -42,7 +46,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
 
   private val wayBits = log2Ceil(CacheParams.ways)
 
-  private val states = Enum(7)
+  private val states = Enum(8)
   val sIdle = states(0)
   val sCompareTag = states(1)
   val sWriteBack = states(2)
@@ -50,6 +54,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val sFlushScan = states(4)
   val sFlushWriteBack = states(5)
   val sFlushDone = states(6)
+  // A memoria recusou o refill/write-back do pedido corrente; fica aqui,
+  // com io.cpu.fault = 1, ate a CPU derrubar o pedido.
+  val sFault = states(7)
   val state = RegInit(sIdle)
   val victimReg = RegInit(0.U(wayBits.W))
   val flushSet = RegInit(0.U(CacheParams.indexBits.W))
@@ -146,18 +153,22 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   io.cpu.hit := false.B
   io.cpu.readData := 0.U
   io.cpu.stall := false.B
+  io.cpu.fault := state === sFault
 
   io.mem.request := false.B
   io.mem.write := false.B
   io.mem.address := Cat(addr.tag, addr.index, 0.U(CacheParams.offsetBits.W))
   io.mem.writeLine := VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
   io.flushDone := state === sFlushDone
+  val flushFaultReg = RegInit(false.B)
+  io.flushFault := flushFaultReg
 
   switch(state) {
     is(sIdle) {
       // pedido aceito, ainda nao atendido
       io.cpu.stall := io.cpu.request || io.flushDirty
       when(io.flushDirty) {
+        flushFaultReg := false.B
         flushSet := 0.U
         flushWay := 0.U
         state := sFlushScan
@@ -210,7 +221,13 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         0.U(CacheParams.offsetBits.W)
       )
       io.mem.writeLine := victimLine.data
-      when(io.mem.ready) { state := sAllocate }
+      when(io.mem.ready) {
+        state := sAllocate
+      }.elsewhen(io.mem.fault) {
+        // A vitima continua valida e suja: nenhum dado se perde e a proxima
+        // tentativa refaz o write-back.
+        state := sFault
+      }
     }
 
     is(sAllocate) {
@@ -229,6 +246,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         arrays.io.write.valid := true.B
         arrays.io.write.dirty := false.B
         state := sCompareTag // reavalia: agora e hit (e trata o store, se for o caso)
+      }.elsewhen(io.mem.fault) {
+        // Nada e gravado nos arrays: a linha nao passa a existir na cache.
+        state := sFault
       }
     }
 
@@ -267,7 +287,17 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         arrays.io.write.valid := true.B
         arrays.io.write.dirty := false.B
         state := sFlushScan
+      }.elsewhen(io.mem.fault) {
+        // Aborta o flush: a linha continua suja (rescanear a repetiria para
+        // sempre). O erro fica registrado em flushFault.
+        flushFaultReg := true.B
+        state := sFlushDone
       }
+    }
+
+    is(sFault) {
+      // io.cpu.fault = 1 (stall = 0, hit = 0). Sai quando o pedido cai.
+      when(!io.cpu.request) { state := sIdle }
     }
 
     is(sFlushDone) {

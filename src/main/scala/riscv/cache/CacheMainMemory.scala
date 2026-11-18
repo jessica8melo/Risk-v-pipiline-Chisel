@@ -19,10 +19,9 @@ import chisel3.util.experimental.loadMemoryFromFileInline
   * empate) e dona do barramento ate completar, e a outra espera. O pedido da
   * porta dona precisa ficar estavel (como a Cache ja faz); se ele cair antes de
   * ready, a transacao e abortada sem escrever nada. Pedidos fora da capacidade
-  * nao sao aceitos: ready fica baixo, readLine retorna zero e nenhuma escrita e
-  * realizada. Pedidos desalinhados tambem ficam sem ready e disparam assert em
-  * simulacao. Como CacheMemIO nao possui canal de erro, um pedido fora da
-  * capacidade permanece aguardando.
+  * (ou desalinhados) sao recusados: em vez de ready sobe `fault` (mesma latencia
+  * de uma transacao normal), readLine retorna zero e nenhuma escrita e
+  * realizada. Pedidos desalinhados tambem disparam assert em simulacao.
   *
   * `initialData` e `programFile` usam palavras de 32 bits, na ordem do programa
   * (palavra 0 = endereco 0). Assim, programa e dados ocupam o mesmo espaco de
@@ -87,6 +86,11 @@ class CacheMainMemory(
   private val complete =
     if (latency == 0) selectedRequest && addressValid
     else busy && selectedRequest && addressValid && waited === latency.U
+  // Ciclo em que a memoria recusa a transacao (endereco invalido): fault sobe no
+  // lugar de ready, com a mesma latencia de uma transacao normal.
+  private val faulted =
+    if (latency == 0) selectedRequest && !addressValid
+    else busy && selectedRequest && !addressValid && waited === latency.U
   private val selectedWriteLine = Wire(
     Vec(CacheParams.wordsPerLine, UInt(32.W))
   )
@@ -162,6 +166,8 @@ class CacheMainMemory(
 
   io.dMem.ready := dSel && complete
   io.iMem.ready := !dSel && complete
+  io.dMem.fault := dSel && faulted
+  io.iMem.fault := !dSel && faulted
   for (word <- 0 until CacheParams.wordsPerLine) {
     io.dMem.readLine(word) := Mux(addressValid, selectedReadLine(word), 0.U)
     io.iMem.readLine(word) := Mux(addressValid, selectedReadLine(word), 0.U)
@@ -174,8 +180,8 @@ class CacheMainMemory(
         ownerIsD := io.dMem.request
         waited := 1.U
       }
-    }.elsewhen(!selectedRequest || complete) {
-      busy := false.B // concluida, ou abortada porque o pedido caiu
+    }.elsewhen(!selectedRequest || complete || faulted) {
+      busy := false.B // concluida, recusada, ou abortada porque o pedido caiu
     }.elsewhen(waited =/= latency.U) {
       waited := waited + 1.U
     }

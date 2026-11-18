@@ -29,6 +29,12 @@ class CpuCacheIO extends Bundle {
   val stall = Input(
     Bool()
   ) // 1 enquanto a cache ainda resolve um miss; pipeline deve congelar
+  val fault = Input(
+    Bool()
+  ) // 1 (nivel) quando a memoria recusou o refill/write-back deste pedido; hit = 0 e
+  // stall = 0. Fica em 1 ate a CPU derrubar `request` (ao tomar o trap).
+  // ICache -> instruction access fault (mcause 1); DCache -> load (5) ou
+  // store/AMO (7) access fault, conforme `write`; mtval = `address`.
 }
 
 /** Interface entre uma cache L1 e o proximo nivel de memoria (a memoria
@@ -53,4 +59,8 @@ class CacheMemIO extends Bundle {
   val ready = Input(
     Bool()
   ) // 1 quando a operacao pedida (refill ou write-back) termina
+  val fault = Input(
+    Bool()
+  ) // 1 quando a memoria recusa a operacao (ex.: endereco fora da memoria) no lugar
+  // de ready: o pedido termina com erro. Nunca sobe junto com ready.
 }

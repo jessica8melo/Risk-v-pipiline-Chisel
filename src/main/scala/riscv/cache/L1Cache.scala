@@ -22,6 +22,9 @@ class L1Cache extends Module {
     // FENCE.I: drena linhas sujas da DCache e invalida todas as linhas da ICache.
     val fenceI = Input(Bool())
     val fenceIDone = Output(Bool())
+    // 1 (valido junto com fenceIDone) se a memoria recusou algum write-back do
+    // flush da DCache: o FENCE.I terminou mas ha dados sujos nao gravados.
+    val fenceIFault = Output(Bool())
   })
 
   val instructionCache = Module(new Cache(isInstructionCache = true))
@@ -37,6 +40,7 @@ class L1Cache extends Module {
   dataCache.io.flushDirty := fenceState === fenceFlushData
   dataCache.io.invalidateAll := false.B
   io.fenceIDone := fenceState === fenceComplete
+  io.fenceIFault := dataCache.io.flushFault
 
   switch(fenceState) {
     is(fenceIdle) {
@@ -63,6 +67,7 @@ class L1Cache extends Module {
   io.iCache.readData := instructionCache.io.cpu.readData
   io.iCache.hit := instructionCache.io.cpu.hit
   io.iCache.stall := instructionCache.io.cpu.stall
+  io.iCache.fault := instructionCache.io.cpu.fault
 
   // ICache <-> Memoria
   io.iMem.request := instructionCache.io.mem.request
@@ -71,6 +76,7 @@ class L1Cache extends Module {
   io.iMem.writeLine := instructionCache.io.mem.writeLine
   instructionCache.io.mem.readLine := io.iMem.readLine
   instructionCache.io.mem.ready := io.iMem.ready
+  instructionCache.io.mem.fault := io.iMem.fault
 
   // CPU <-> DCache
   dataCache.io.cpu.request := io.dCache.request && !fenceActive
@@ -82,6 +88,7 @@ class L1Cache extends Module {
   io.dCache.readData := dataCache.io.cpu.readData
   io.dCache.hit := dataCache.io.cpu.hit
   io.dCache.stall := dataCache.io.cpu.stall
+  io.dCache.fault := dataCache.io.cpu.fault
 
   // DCache <-> Memoria
   io.dMem.request := dataCache.io.mem.request
@@ -90,4 +97,5 @@ class L1Cache extends Module {
   io.dMem.writeLine := dataCache.io.mem.writeLine
   dataCache.io.mem.readLine := io.dMem.readLine
   dataCache.io.mem.ready := io.dMem.ready
+  dataCache.io.mem.fault := io.dMem.fault
 }
