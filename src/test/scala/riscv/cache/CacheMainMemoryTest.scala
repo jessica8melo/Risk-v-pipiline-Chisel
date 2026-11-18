@@ -228,4 +228,28 @@ class CacheMainMemoryTest extends AnyFlatSpec with ChiselScalatestTester {
       )
     }
   }
+
+  it should "voltar ao conteudo inicial apos reset, mesmo em linhas ja escritas" in {
+    test(
+      new CacheMainMemory(
+        depthWords = 16,
+        initialData = Seq(1L, 2L, 3L, 4L, 5L)
+      )
+    ) { dut =>
+      initialize(dut)
+      writeLine(dut, 0, Seq(0xaaL, 0xbbL, 0xccL, 0xddL)) // dentro da ROM
+      writeLine(dut, 32, Seq(9L, 8L, 7L, 6L)) // fora da ROM
+      assert(readLine(dut, 32) == Seq(9, 8, 7, 6).map(BigInt(_)))
+
+      dut.reset.poke(true.B)
+      dut.clock.step(2)
+      dut.reset.poke(false.B)
+      initialize(dut)
+
+      assert(readLine(dut, 0) == Seq(1, 2, 3, 4).map(BigInt(_)))
+      assert(readLine(dut, 16) == Seq(5, 0, 0, 0).map(BigInt(_)))
+      assert(readLine(dut, 32) == Seq.fill(4)(BigInt(0)), "linha fora da ROM")
+      assert(readLine(dut, 48) == Seq.fill(4)(BigInt(0)))
+    }
+  }
 }
