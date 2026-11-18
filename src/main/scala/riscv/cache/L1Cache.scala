@@ -25,6 +25,11 @@ class L1Cache extends Module {
     // 1 (valido junto com fenceIDone) se a memoria recusou algum write-back do
     // flush da DCache: o FENCE.I terminou mas ha dados sujos nao gravados.
     val fenceIFault = Output(Bool())
+
+    // Contadores de desempenho de cada cache (a ligacao aos CSRs fica fora).
+    val iPerf = Output(new CachePerf)
+    val dPerf = Output(new CachePerf)
+    val perfClear = Input(Bool()) // zera os contadores das duas caches
   })
 
   val instructionCache = Module(new Cache(isInstructionCache = true))
@@ -41,6 +46,10 @@ class L1Cache extends Module {
   dataCache.io.invalidateAll := false.B
   io.fenceIDone := fenceState === fenceComplete
   io.fenceIFault := dataCache.io.flushFault
+  io.iPerf := instructionCache.io.perf
+  io.dPerf := dataCache.io.perf
+  instructionCache.io.perfClear := io.perfClear
+  dataCache.io.perfClear := io.perfClear
 
   switch(fenceState) {
     is(fenceIdle) {

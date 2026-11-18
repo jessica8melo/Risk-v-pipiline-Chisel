@@ -35,6 +35,8 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
     // 1 (nivel, valido junto com flushDone) se um write-back do flush foi
     // recusado pela memoria: o flush foi abortado e ainda ha linhas sujas.
     val flushFault = Output(Bool())
+    val perf = Output(new CachePerf)
+    val perfClear = Input(Bool()) // zera todos os contadores
     val invalidateAll = Input(Bool())
     // Observabilidade para testes (validos no ciclo em que hit = 1).
     val dbg = Output(new Bundle {
@@ -163,6 +165,30 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val flushFaultReg = RegInit(false.B)
   io.flushFault := flushFaultReg
 
+  // ---- Contadores de desempenho (ver CachePerf) ---------------------------
+  // Eventos de um ciclo, ligados na FSM abaixo.
+  val evHit = WireDefault(false.B)
+  val evMiss = WireDefault(false.B)
+  val evWriteBack = WireDefault(false.B)
+  val evFlushWriteBack = WireDefault(false.B)
+  val evFault = WireDefault(false.B)
+  // 1 enquanto o pedido corrente ja contou um miss (o hit pos-refill nao e hit)
+  val refilling = RegInit(false.B)
+  val evMissCycle = state === sWriteBack || state === sAllocate ||
+    (state === sCompareTag && io.cpu.request && !tagHit)
+
+  private def counter(event: Bool): UInt = {
+    val c = RegInit(0.U(64.W))
+    when(io.perfClear) { c := 0.U }.elsewhen(event) { c := c + 1.U }
+    c
+  }
+  io.perf.hits := counter(evHit)
+  io.perf.misses := counter(evMiss)
+  io.perf.writeBacks := counter(evWriteBack)
+  io.perf.flushWriteBacks := counter(evFlushWriteBack)
+  io.perf.faults := counter(evFault)
+  io.perf.missCycles := counter(evMissCycle)
+
   switch(state) {
     is(sIdle) {
       // pedido aceito, ainda nao atendido
@@ -179,8 +205,11 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
 
     is(sCompareTag) {
       when(!io.cpu.request) {
+        refilling := false.B
         state := sIdle
       }.elsewhen(tagHit) {
+        evHit := !refilling
+        refilling := false.B
         io.cpu.hit := true.B
         io.cpu.readData := loadData
         lru.io.touch := true.B // via de acerto passa a MRU
@@ -205,6 +234,8 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
           }
         }
       }.otherwise {
+        evMiss := true.B
+        refilling := true.B
         io.cpu.stall := true.B
         victimReg := victimWay
         state := Mux(victimNeedsWriteBack, sWriteBack, sAllocate)
@@ -222,8 +253,11 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
       )
       io.mem.writeLine := victimLine.data
       when(io.mem.ready) {
+        evWriteBack := true.B
         state := sAllocate
       }.elsewhen(io.mem.fault) {
+        evFault := true.B
+        refilling := false.B
         // A vitima continua valida e suja: nenhum dado se perde e a proxima
         // tentativa refaz o write-back.
         state := sFault
@@ -247,6 +281,8 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         arrays.io.write.dirty := false.B
         state := sCompareTag // reavalia: agora e hit (e trata o store, se for o caso)
       }.elsewhen(io.mem.fault) {
+        evFault := true.B
+        refilling := false.B
         // Nada e gravado nos arrays: a linha nao passa a existir na cache.
         state := sFault
       }
@@ -275,6 +311,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
       io.mem.address := Cat(flushTag, flushSet, 0.U(CacheParams.offsetBits.W))
       io.mem.writeLine := flushData
       when(io.mem.ready) {
+        evFlushWriteBack := true.B
         arrays.io.write.en := true.B
         arrays.io.write.way := flushWay
         arrays.io.write.index := flushSet
@@ -291,6 +328,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         // Aborta o flush: a linha continua suja (rescanear a repetiria para
         // sempre). O erro fica registrado em flushFault.
         flushFaultReg := true.B
+        evFault := true.B
         state := sFlushDone
       }
     }
