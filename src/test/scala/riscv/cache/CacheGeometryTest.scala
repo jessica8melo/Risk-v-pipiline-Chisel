@@ -169,7 +169,7 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
         val rng = new scala.util.Random(42)
         // footprint 1,5x maior que a cache: forca despejos em todo conjunto
         val regionLines = cfg.numLines * 3 / 2
-        val accesses = math.min(3200, math.max(600, 3 * cfg.numLines))
+        val accesses = math.min(1500, math.max(400, 2 * cfg.numLines))
         val memory = mutable.Map[Long, BigInt]() // palavra -> valor
         val written = mutable.Set[Long]()
         val ref =

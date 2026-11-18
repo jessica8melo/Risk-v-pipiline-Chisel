@@ -94,6 +94,8 @@ class Pipeline3(
       cfg = cacheConfig
     )
   )
+  // Contadores de desempenho da cache: por enquanto nao zerados pelo pipeline.
+  l1Cache.io.perfClear := false.B
   l1Cache.io.iMem <> mainMemory.io.iMem
   l1Cache.io.dMem <> mainMemory.io.dMem
   val fetch = Module(new InstructionFetch)

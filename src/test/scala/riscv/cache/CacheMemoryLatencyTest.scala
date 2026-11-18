@@ -18,6 +18,7 @@ class L1WithMemory(latency: Int, depthWords: Int, initialData: Seq[Long])
   })
 
   val l1 = Module(new L1Cache)
+  l1.io.perfClear := false.B
   val mem = Module(
     new CacheMainMemory(depthWords, initialData, latency = latency)
   )
