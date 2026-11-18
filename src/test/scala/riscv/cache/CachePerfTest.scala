@@ -42,7 +42,8 @@ class L1PerfSystem(latency: Int, depthWords: Int, initialData: Seq[Long])
 class CachePerfTest extends AnyFlatSpec with ChiselScalatestTester {
 
   private val W = CacheParams.wordsPerLine
-  private val WayStride = CacheParams.numSets * CacheParams.lineBytes // mesmo set
+  private val WayStride =
+    CacheParams.numSets * CacheParams.lineBytes // mesmo set
 
   private def reset(dut: Module): Unit = {
     dut.reset.poke(true.B)
@@ -77,7 +78,8 @@ class CachePerfTest extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.cpu.writeData.poke(0x5a.U)
   }
 
-  /** Atende o pedido (refill/write-back, latencia zero) ate o hit e o consome. */
+  /** Atende o pedido (refill/write-back, latencia zero) ate o hit e o consome.
+    */
   private def access(dut: Cache, addr: Long, write: Boolean = false): Unit = {
     issue(dut, addr, write)
     var c = 0
@@ -96,7 +98,10 @@ class CachePerfTest extends AnyFlatSpec with ChiselScalatestTester {
 
   private def waitMemRequest(dut: Cache, write: Boolean): Unit = {
     var c = 0
-    while (!(dut.io.mem.request.peekBoolean() && dut.io.mem.write.peekBoolean() == write)) {
+    while (
+      !(dut.io.mem.request
+        .peekBoolean() && dut.io.mem.write.peekBoolean() == write)
+    ) {
       require(c < 20, "a cache nao fez o pedido esperado a memoria")
       dut.clock.step(1)
       c += 1
@@ -184,7 +189,12 @@ class CachePerfTest extends AnyFlatSpec with ChiselScalatestTester {
   // L1Cache: contadores independentes por cache, com memoria lenta
   // ------------------------------------------------------------------
 
-  private def run(dut: L1PerfSystem, port: CpuCacheIO, addr: Long, write: Boolean): Unit = {
+  private def run(
+      dut: L1PerfSystem,
+      port: CpuCacheIO,
+      addr: Long,
+      write: Boolean
+  ): Unit = {
     port.request.poke(true.B)
     port.write.poke(write.B)
     port.address.poke(addr.U)
@@ -226,13 +236,19 @@ class CachePerfTest extends AnyFlatSpec with ChiselScalatestTester {
       assert(i.hits.peekInt() == 1 && i.misses.peekInt() == 1)
       // miss = 1 ciclo de deteccao + (latencia + 1) ciclos de Allocate
       assert(i.missCycles.peekInt() == latency + 2)
-      assert(d.hits.peekInt() == 0 && d.misses.peekInt() == 0, "DCache nao se mexeu")
+      assert(
+        d.hits.peekInt() == 0 && d.misses.peekInt() == 0,
+        "DCache nao se mexeu"
+      )
 
       run(dut, dut.io.dCache, 0x10, write = false) // miss de dado
       run(dut, dut.io.dCache, 0x14, write = true) // hit (store): linha suja
       assert(d.hits.peekInt() == 1 && d.misses.peekInt() == 1)
       assert(d.missCycles.peekInt() == latency + 2)
-      assert(i.hits.peekInt() == 1 && i.misses.peekInt() == 1, "ICache nao se mexeu")
+      assert(
+        i.hits.peekInt() == 1 && i.misses.peekInt() == 1,
+        "ICache nao se mexeu"
+      )
 
       // FENCE.I: a DCache despeja a linha suja pelo flush
       dut.io.fenceI.poke(true.B)

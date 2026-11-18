@@ -68,16 +68,16 @@ class CacheMemIO extends Bundle {
 /** Contadores de desempenho de uma cache (64 bits, so crescem ate `clear`).
   *
   * Uma "consulta" e um pedido da CPU avaliado em CompareTag:
-  *  - `hits`: pedidos atendidos na primeira consulta;
-  *  - `misses`: consultas que falharam (um miss seguido de refill conta 1; o
-  *    hit que serve o pedido depois do refill NAO entra em `hits`, entao
-  *    hits + misses = pedidos atendidos, salvo refill refeito apos invalidacao
-  *    ou fault);
-  *  - `writeBacks`: linhas sujas gravadas por despejo (miss com vitima suja);
-  *  - `flushWriteBacks`: linhas sujas gravadas pelo flush (FENCE.I);
-  *  - `faults`: operacoes recusadas pela memoria (CacheMemIO.fault);
-  *  - `missCycles`: ciclos gastos tratando miss (deteccao + write-back +
-  *    refill), a penalidade de miss acumulada.
+  *   - `hits`: pedidos atendidos na primeira consulta;
+  *   - `misses`: consultas que falharam (um miss seguido de refill conta 1; o
+  *     hit que serve o pedido depois do refill NAO entra em `hits`, entao hits
+  *     + misses = pedidos atendidos, salvo refill refeito apos invalidacao ou
+  *     fault);
+  *   - `writeBacks`: linhas sujas gravadas por despejo (miss com vitima suja);
+  *   - `flushWriteBacks`: linhas sujas gravadas pelo flush (FENCE.I);
+  *   - `faults`: operacoes recusadas pela memoria (CacheMemIO.fault);
+  *   - `missCycles`: ciclos gastos tratando miss (deteccao + write-back +
+  *     refill), a penalidade de miss acumulada.
   */
 class CachePerf extends Bundle {
   val hits = UInt(64.W)

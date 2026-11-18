@@ -14,7 +14,8 @@ import org.scalatest.flatspec.AnyFlatSpec
 class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
 
   private val W = CacheParams.wordsPerLine
-  private val WayStride = CacheParams.numSets * CacheParams.lineBytes // mesmo set
+  private val WayStride =
+    CacheParams.numSets * CacheParams.lineBytes // mesmo set
 
   private def reset(dut: Module): Unit = {
     dut.reset.poke(true.B)
@@ -41,7 +42,12 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.invalidateAll.poke(false.B)
   }
 
-  private def issue(dut: Cache, addr: Long, write: Boolean = false, data: Long = 0): Unit = {
+  private def issue(
+      dut: Cache,
+      addr: Long,
+      write: Boolean = false,
+      data: Long = 0
+  ): Unit = {
     dut.io.cpu.request.poke(true.B)
     dut.io.cpu.write.poke(write.B)
     dut.io.cpu.address.poke(addr.U)
@@ -55,10 +61,20 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   /** Avanca ate a cache pedir `write` (write-back) ou refill a memoria. */
-  private def waitMemRequest(dut: Cache, write: Boolean, max: Int = 20): Unit = {
+  private def waitMemRequest(
+      dut: Cache,
+      write: Boolean,
+      max: Int = 20
+  ): Unit = {
     var c = 0
-    while (!(dut.io.mem.request.peekBoolean() && dut.io.mem.write.peekBoolean() == write)) {
-      require(c < max, s"a cache nao pediu ${if (write) "write-back" else "refill"}")
+    while (
+      !(dut.io.mem.request
+        .peekBoolean() && dut.io.mem.write.peekBoolean() == write)
+    ) {
+      require(
+        c < max,
+        s"a cache nao pediu ${if (write) "write-back" else "refill"}"
+      )
       dut.clock.step(1)
       c += 1
     }
@@ -72,7 +88,10 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   /** Atende o pedido corrente da CPU com memoria de latencia zero ate o hit. */
-  private def serveUntilHit(dut: Cache, line: Seq[Long] = Seq.fill(W)(0L)): Unit = {
+  private def serveUntilHit(
+      dut: Cache,
+      line: Seq[Long] = Seq.fill(W)(0L)
+  ): Unit = {
     var c = 0
     while (!dut.io.cpu.hit.peekBoolean()) {
       require(c < 40, "timeout esperando hit")
@@ -139,7 +158,9 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
 
       issue(dut, 0x40L + 4 * WayStride)
       waitMemRequest(dut, write = true) // tenta de novo o write-back
-      dut.io.mem.writeLine(0).expect(0xaa.U, "dado sujo nao pode ter sido perdido")
+      dut.io.mem
+        .writeLine(0)
+        .expect(0xaa.U, "dado sujo nao pode ter sido perdido")
       serveUntilHit(dut)
       finishAccess(dut)
 
@@ -220,7 +241,10 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.clock.step(1)
       c += 1
     }
-    require(!(p.ready.peekBoolean() && p.fault.peekBoolean()), "ready e fault juntos")
+    require(
+      !(p.ready.peekBoolean() && p.fault.peekBoolean()),
+      "ready e fault juntos"
+    )
     (c, p.fault.peekBoolean())
   }
 
@@ -238,7 +262,10 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
           p.address.poke(0x100.U)
           val (cycles, fault) = waitDone(dut, p)
           assert(fault, "pedido fora da capacidade deve dar fault")
-          assert(cycles == latency, s"fault apos $cycles ciclos, esperado $latency")
+          assert(
+            cycles == latency,
+            s"fault apos $cycles ciclos, esperado $latency"
+          )
           p.ready.expect(false.B)
           for (w <- 0 until W) p.readLine(w).expect(0.U)
         }
@@ -282,7 +309,9 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.fenceI.poke(false.B)
   }
 
-  private def stepUntil(what: String, max: Int = 80)(cond: => Boolean)(dut: L1WithMemory): Int = {
+  private def stepUntil(what: String, max: Int = 80)(
+      cond: => Boolean
+  )(dut: L1WithMemory): Int = {
     var c = 0
     while (!cond) {
       require(c < max, s"timeout: $what")
@@ -296,16 +325,20 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
 
   it should "propagar fault a CPU, nao travar e atender acessos validos em seguida" in {
     val latency = 3
-    test(new L1WithMemory(latency, memWords, Seq(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L))) { dut =>
+    test(
+      new L1WithMemory(latency, memWords, Seq(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L))
+    ) { dut =>
       // ICache: busca fora da memoria
       initCpu(dut)
       dut.io.iCache.request.poke(true.B)
       dut.io.iCache.address.poke(0x100.U)
-      val cycles = stepUntil("fault da ICache")(dut.io.iCache.fault.peekBoolean())(dut)
+      val cycles =
+        stepUntil("fault da ICache")(dut.io.iCache.fault.peekBoolean())(dut)
       assert(cycles >= latency, "fault antes da latencia da memoria")
       dut.io.iCache.hit.expect(false.B)
       dut.clock.step(3)
-      dut.io.iCache.fault.expect(true.B, "fault e nivel ate a CPU derrubar o pedido")
+      dut.io.iCache.fault
+        .expect(true.B, "fault e nivel ate a CPU derrubar o pedido")
       dut.io.iCache.request.poke(false.B)
       dut.clock.step(2)
       dut.io.iCache.fault.expect(false.B)
@@ -324,7 +357,9 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
         dut.io.dCache.write.poke(write.B)
         dut.io.dCache.address.poke(0x200.U)
         dut.io.dCache.writeData.poke(0x55.U)
-        stepUntil(s"fault da DCache (write=$write)")(dut.io.dCache.fault.peekBoolean())(dut)
+        stepUntil(s"fault da DCache (write=$write)")(
+          dut.io.dCache.fault.peekBoolean()
+        )(dut)
         dut.io.dCache.hit.expect(false.B)
         dut.io.dCache.request.poke(false.B)
         dut.io.dCache.write.poke(false.B)
@@ -337,7 +372,9 @@ class CacheFaultTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.dCache.address.poke(0x200.U)
       dut.io.iCache.request.poke(true.B)
       dut.io.iCache.address.poke(0x10.U)
-      stepUntil("hit da ICache com a DCache em fault")(dut.io.iCache.hit.peekBoolean())(dut)
+      stepUntil("hit da ICache com a DCache em fault")(
+        dut.io.iCache.hit.peekBoolean()
+      )(dut)
       dut.io.iCache.readData.expect(5.U)
       dut.io.dCache.fault.expect(true.B)
       dut.io.iCache.request.poke(false.B)

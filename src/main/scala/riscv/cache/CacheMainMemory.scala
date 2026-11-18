@@ -19,8 +19,8 @@ import chisel3.util.experimental.loadMemoryFromFileInline
   * empate) e dona do barramento ate completar, e a outra espera. O pedido da
   * porta dona precisa ficar estavel (como a Cache ja faz); se ele cair antes de
   * ready, a transacao e abortada sem escrever nada. Pedidos fora da capacidade
-  * (ou desalinhados) sao recusados: em vez de ready sobe `fault` (mesma latencia
-  * de uma transacao normal), readLine retorna zero e nenhuma escrita e
+  * (ou desalinhados) sao recusados: em vez de ready sobe `fault` (mesma
+  * latencia de uma transacao normal), readLine retorna zero e nenhuma escrita e
   * realizada. Pedidos desalinhados tambem disparam assert em simulacao.
   *
   * `initialData` e `programFile` usam palavras de 32 bits, na ordem do programa
