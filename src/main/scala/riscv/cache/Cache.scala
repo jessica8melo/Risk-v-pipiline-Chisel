@@ -22,14 +22,18 @@ import chisel3.util._
   * direto da porta durante todo o miss.
   *
   * Reposicao: em miss, a vitima e a primeira via invalida do conjunto; se todas
-  * sao validas, a menos recentemente usada (CacheLru). O LRU e atualizado em
-  * todo hit; como o refill termina em sCompareTag, a linha recem-alocada tambem
-  * vira MRU pelo hit que atende o pedido.
+  * sao validas, a menos recentemente usada (CacheReplacement: LRU, FIFO ou
+  * aleatoria). O LRU e atualizado em todo hit; como o refill termina em
+  * sCompareTag, a linha recem-alocada tambem vira MRU pelo hit que atende o
+  * pedido.
   */
-class Cache(isInstructionCache: Boolean = false) extends Module {
+class Cache(
+    isInstructionCache: Boolean = false,
+    cfg: CacheConfig = CacheConfig.default
+) extends Module {
   val io = IO(new Bundle {
     val cpu = Flipped(new CpuCacheIO)
-    val mem = new CacheMemIO
+    val mem = new CacheMemIO(cfg)
     val flushDirty = Input(Bool())
     val flushDone = Output(Bool())
     // 1 (nivel, valido junto com flushDone) se um write-back do flush foi
@@ -40,13 +44,13 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
     val invalidateAll = Input(Bool())
     // Observabilidade para testes (validos no ciclo em que hit = 1).
     val dbg = Output(new Bundle {
-      val hitWay = UInt(log2Ceil(CacheParams.ways).W) // via em que a tag casou
+      val hitWay = UInt(cfg.wayBits.W) // via em que a tag casou
       val hitDirty =
         Bool() // dirty da linha ANTES de um eventual store deste ciclo
     })
   })
 
-  private val wayBits = log2Ceil(CacheParams.ways)
+  private val wayBits = cfg.wayBits
 
   private val states = Enum(8)
   val sIdle = states(0)
@@ -61,19 +65,19 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val sFault = states(7)
   val state = RegInit(sIdle)
   val victimReg = RegInit(0.U(wayBits.W))
-  val flushSet = RegInit(0.U(CacheParams.indexBits.W))
+  val flushSet = RegInit(0.U(cfg.indexBits.W))
   val flushWay = RegInit(0.U(wayBits.W))
-  val flushTag = RegInit(0.U(CacheParams.tagBits.W))
+  val flushTag = RegInit(0.U(cfg.tagBits.W))
   val flushData = RegInit(
-    VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
+    VecInit(Seq.fill(cfg.wordsPerLine)(0.U(32.W)))
   )
 
-  val addr = CacheAddress.fromUInt(io.cpu.address)
-  val wordIdx = addr.offset(CacheParams.offsetBits - 1, 2)
+  val addr = CacheAddress.fromUInt(io.cpu.address, cfg)
+  val wordIdx = addr.offset(cfg.offsetBits - 1, 2)
   val byteOff = addr.offset(1, 0)
 
   // ---------------------------------------------------------------- arrays
-  val arrays = Module(new CacheArrays)
+  val arrays = Module(new CacheArrays(cfg))
   val flushing = state === sFlushScan || state === sFlushWriteBack
   arrays.io.readIndex := Mux(flushing, flushSet, addr.index)
   arrays.io.invalidateAll := io.invalidateAll
@@ -82,9 +86,9 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   arrays.io.write.way := 0.U
   arrays.io.write.index := addr.index
   arrays.io.write.wordMask := VecInit(
-    Seq.fill(CacheParams.wordsPerLine)(false.B)
+    Seq.fill(cfg.wordsPerLine)(false.B)
   )
-  arrays.io.write.data := VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
+  arrays.io.write.data := VecInit(Seq.fill(cfg.wordsPerLine)(0.U(32.W)))
   arrays.io.write.metaEn := false.B
   arrays.io.write.tag := addr.tag
   arrays.io.write.valid := false.B
@@ -103,11 +107,16 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   io.dbg.hitDirty := hitLine.dirty
 
   // ------------------------------------------------------------------- LRU
-  val lru = Module(new CacheLru)
-  lru.io.index := addr.index
-  lru.io.touch := false.B // a FSM liga em todo hit
-  lru.io.touchIndex := addr.index
-  lru.io.touchWay := hitWay
+  // Politica de substituicao escolhida em cfg.policy (LRU, FIFO ou aleatoria).
+  val repl = CacheReplacement(cfg)
+  repl.io.index := addr.index
+  repl.io.touch := false.B // a FSM liga em todo hit
+  repl.io.touchIndex := addr.index
+  repl.io.touchWay := hitWay
+  repl.io.fill := false.B // a FSM liga quando um refill termina
+  repl.io.fillIndex := addr.index
+  repl.io.fillWay := 0.U
+  repl.io.clear := io.invalidateAll
 
   // ------------------------------------------------- load: extracao de dado
   // Convencao de memSize (funct3[1:0] do RV32I): 0 = byte, 1 = half, 2 = word.
@@ -141,7 +150,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
   val invalidWays = VecInit(setLines.map(l => !l.valid))
   val hasInvalid = invalidWays.asUInt.orR
   val victimWay =
-    Mux(hasInvalid, PriorityEncoder(invalidWays.asUInt), lru.io.lruWay)
+    Mux(hasInvalid, PriorityEncoder(invalidWays.asUInt), repl.io.victim)
   val victimWayLine = setLines(victimWay)
   val victimNeedsWriteBack = victimWayLine.valid && victimWayLine.dirty
 
@@ -159,8 +168,8 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
 
   io.mem.request := false.B
   io.mem.write := false.B
-  io.mem.address := Cat(addr.tag, addr.index, 0.U(CacheParams.offsetBits.W))
-  io.mem.writeLine := VecInit(Seq.fill(CacheParams.wordsPerLine)(0.U(32.W)))
+  io.mem.address := Cat(addr.tag, addr.index, 0.U(cfg.offsetBits.W))
+  io.mem.writeLine := VecInit(Seq.fill(cfg.wordsPerLine)(0.U(32.W)))
   io.flushDone := state === sFlushDone
   val flushFaultReg = RegInit(false.B)
   io.flushFault := flushFaultReg
@@ -212,7 +221,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         refilling := false.B
         io.cpu.hit := true.B
         io.cpu.readData := loadData
-        lru.io.touch := true.B // via de acerto passa a MRU
+        repl.io.touch := true.B // via de acerto (LRU: passa a MRU)
         state := sIdle
 
         if (!isInstructionCache) {
@@ -222,10 +231,10 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
             arrays.io.write.way := hitWay
             arrays.io.write.index := addr.index
             arrays.io.write.wordMask := VecInit(
-              (0 until CacheParams.wordsPerLine).map(i => wordIdx === i.U)
+              (0 until cfg.wordsPerLine).map(i => wordIdx === i.U)
             )
             arrays.io.write.data := VecInit(
-              Seq.fill(CacheParams.wordsPerLine)(storeWord)
+              Seq.fill(cfg.wordsPerLine)(storeWord)
             )
             arrays.io.write.metaEn := true.B
             arrays.io.write.tag := addr.tag
@@ -249,7 +258,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
       io.mem.address := Cat(
         victimLine.tag,
         addr.index,
-        0.U(CacheParams.offsetBits.W)
+        0.U(cfg.offsetBits.W)
       )
       io.mem.writeLine := victimLine.data
       when(io.mem.ready) {
@@ -272,13 +281,15 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         arrays.io.write.way := victimReg
         arrays.io.write.index := addr.index
         arrays.io.write.wordMask := VecInit(
-          Seq.fill(CacheParams.wordsPerLine)(true.B)
+          Seq.fill(cfg.wordsPerLine)(true.B)
         )
         arrays.io.write.data := io.mem.readLine
         arrays.io.write.metaEn := true.B
         arrays.io.write.tag := addr.tag
         arrays.io.write.valid := true.B
         arrays.io.write.dirty := false.B
+        repl.io.fill := true.B
+        repl.io.fillWay := victimReg
         state := sCompareTag // reavalia: agora e hit (e trata o store, se for o caso)
       }.elsewhen(io.mem.fault) {
         evFault := true.B
@@ -296,7 +307,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         flushData := flushCandidate.data
         state := sFlushWriteBack
       }.otherwise {
-        when(flushSet === (CacheParams.numSets - 1).U) {
+        when(flushSet === (cfg.numSets - 1).U) {
           state := sFlushDone
         }.otherwise {
           flushSet := flushSet + 1.U
@@ -308,7 +319,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
       io.cpu.stall := true.B
       io.mem.request := true.B
       io.mem.write := true.B
-      io.mem.address := Cat(flushTag, flushSet, 0.U(CacheParams.offsetBits.W))
+      io.mem.address := Cat(flushTag, flushSet, 0.U(cfg.offsetBits.W))
       io.mem.writeLine := flushData
       when(io.mem.ready) {
         evFlushWriteBack := true.B
@@ -316,7 +327,7 @@ class Cache(isInstructionCache: Boolean = false) extends Module {
         arrays.io.write.way := flushWay
         arrays.io.write.index := flushSet
         arrays.io.write.wordMask := VecInit(
-          Seq.fill(CacheParams.wordsPerLine)(false.B)
+          Seq.fill(cfg.wordsPerLine)(false.B)
         )
         arrays.io.write.data := flushData
         arrays.io.write.metaEn := true.B

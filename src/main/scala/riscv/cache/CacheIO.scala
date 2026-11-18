@@ -45,17 +45,17 @@ class CpuCacheIO extends Bundle {
   * request/ready (sem Decoupled/Valid-Ready do chisel3.util) e suficiente e
   * fica consistente com o estilo do resto do projeto.
   */
-class CacheMemIO extends Bundle {
+class CacheMemIO(cfg: CacheConfig = CacheConfig.default) extends Bundle {
   // Cache -> Memoria
   val request = Output(Bool())
   val write = Output(
     Bool()
   ) // false = le linha (refill), true = escreve linha (write-back)
   val address = Output(UInt(32.W)) // endereco alinhado ao inicio da linha
-  val writeLine = Output(Vec(CacheParams.wordsPerLine, UInt(32.W)))
+  val writeLine = Output(Vec(cfg.wordsPerLine, UInt(32.W)))
 
   // Memoria -> Cache
-  val readLine = Input(Vec(CacheParams.wordsPerLine, UInt(32.W)))
+  val readLine = Input(Vec(cfg.wordsPerLine, UInt(32.W)))
   val ready = Input(
     Bool()
   ) // 1 quando a operacao pedida (refill ou write-back) termina

@@ -3,53 +3,62 @@ package riscv.cache
 import chisel3._
 import chisel3.util._
 
-/** LRU verdadeiro por conjunto, para associatividade `ways` (potencia de 2).
+/** Interface comum das politicas de substituicao.
   *
-  * Guarda, para cada conjunto, o "rank" de cada via: 0 = mais recentemente
-  * usada (MRU) ... ways-1 = menos recentemente usada (LRU). Os ranks de um
-  * conjunto formam sempre uma permutacao de 0..ways-1 (reset: via i tem rank
-  * i).
-  *
-  * Toque em uma via w: w passa a rank 0 e toda via com rank menor que o antigo
-  * rank de w sobe uma posicao; as mais antigas nao mudam.
-  *
-  * Leitura combinacional de `lruWay` (via de rank ways-1 do conjunto `index`),
-  * escrita sincrona pela porta `touch*`.
-  *
-  * Custo: numSets * ways * log2(ways) flip-flops (1024 para 128x4x2).
-  * Alternativa mais barata, se area importar: pseudo-LRU em arvore (ways-1 bits
-  * por conjunto), ao custo de nao ser LRU exato.
+  *   - `index`: conjunto consultado; `victim` e a via a despejar nele quando
+  *     todas as vias sao validas (o preenchimento de vias invalidas e feito
+  *     pela Cache, antes da politica);
+  *   - `touch*`: um acerto na via `touchWay` do conjunto `touchIndex`;
+  *   - `fill*`: uma linha nova foi alocada na via `fillWay` do conjunto
+  *     `fillIndex` (refill concluido);
+  *   - `clear`: todas as linhas foram invalidadas (FENCE.I na ICache).
   */
-class CacheLru extends Module {
-  private val wayBits = log2Ceil(CacheParams.ways)
+class ReplacementIO(cfg: CacheConfig) extends Bundle {
+  val index = Input(UInt(cfg.indexBits.W))
+  val victim = Output(UInt(cfg.wayBits.W))
+  val touch = Input(Bool())
+  val touchIndex = Input(UInt(cfg.indexBits.W))
+  val touchWay = Input(UInt(cfg.wayBits.W))
+  val fill = Input(Bool())
+  val fillIndex = Input(UInt(cfg.indexBits.W))
+  val fillWay = Input(UInt(cfg.wayBits.W))
+  val clear = Input(Bool())
+}
 
-  val io = IO(new Bundle {
-    val index = Input(UInt(CacheParams.indexBits.W))
-    val lruWay = Output(UInt(wayBits.W))
+abstract class CacheReplacement(cfg: CacheConfig) extends Module {
+  val io = IO(new ReplacementIO(cfg))
+}
 
-    val touch = Input(Bool())
-    val touchIndex = Input(UInt(CacheParams.indexBits.W))
-    val touchWay = Input(UInt(wayBits.W))
-  })
+object CacheReplacement {
+  def apply(cfg: CacheConfig): CacheReplacement = cfg.policy match {
+    case ReplacementPolicy.Lru    => Module(new CacheLru(cfg))
+    case ReplacementPolicy.Fifo   => Module(new CacheFifo(cfg))
+    case ReplacementPolicy.Random => Module(new CacheRandom(cfg))
+  }
+}
 
+/** LRU por ranking: para cada conjunto, `rank(via)` vai de 0 (MRU) a ways - 1
+  * (LRU), sempre uma permutacao. So acertos (`touch`) atualizam.
+  */
+class CacheLru(cfg: CacheConfig = CacheConfig.default)
+    extends CacheReplacement(cfg) {
   private val rank = RegInit(
     VecInit(
-      Seq.fill(CacheParams.numSets)(
-        VecInit(Seq.tabulate(CacheParams.ways)(w => w.U(wayBits.W)))
+      Seq.fill(cfg.numSets)(
+        VecInit(Seq.tabulate(cfg.ways)(w => w.U(cfg.wayBits.W)))
       )
     )
   )
 
-  // Vitima: a via de maior rank (exatamente uma, pois e permutacao).
   private val current = rank(io.index)
-  io.lruWay := PriorityEncoder(
-    VecInit(current.map(_ === (CacheParams.ways - 1).U)).asUInt
+  io.victim := PriorityEncoder(
+    VecInit(current.map(_ === (cfg.ways - 1).U)).asUInt
   )
 
   when(io.touch) {
     val old = rank(io.touchIndex)
     val touchedRank = old(io.touchWay)
-    for (j <- 0 until CacheParams.ways) {
+    for (j <- 0 until cfg.ways) {
       when(j.U === io.touchWay) {
         rank(io.touchIndex)(j) := 0.U
       }.elsewhen(old(j) < touchedRank) {
@@ -57,4 +66,43 @@ class CacheLru extends Module {
       }
     }
   }
+}
+
+/** FIFO: um ponteiro por conjunto aponta a via mais antiga e avanca a cada
+  * linha alocada; acertos nao o alteram. Como as vias invalidas sao preenchidas
+  * em ordem crescente, o ponteiro coincide com a ordem de chegada; `clear`
+  * (conjunto vazio de novo) o zera.
+  */
+class CacheFifo(cfg: CacheConfig = CacheConfig.default)
+    extends CacheReplacement(cfg) {
+  private val pointer = RegInit(
+    VecInit(Seq.fill(cfg.numSets)(0.U(cfg.wayBits.W)))
+  )
+
+  io.victim := pointer(io.index)
+
+  when(io.clear) {
+    pointer.foreach(_ := 0.U)
+  }.elsewhen(io.fill) {
+    val next = Mux(
+      pointer(io.fillIndex) === (cfg.ways - 1).U,
+      0.U,
+      pointer(io.fillIndex) + 1.U
+    )
+    pointer(io.fillIndex) := next
+  }
+}
+
+/** Aleatoria: LFSR de 16 bits (x^16 + x^14 + x^13 + x^11 + 1) sempre em marcha;
+  * a vitima e formada pelos bits menos significativos. Determinista (mesma
+  * semente), mas depende dos ciclos de simulacao.
+  */
+class CacheRandom(cfg: CacheConfig = CacheConfig.default)
+    extends CacheReplacement(cfg) {
+  private val lfsr = RegInit("hACE1".U(16.W))
+  lfsr := Cat(lfsr(14, 0), lfsr(15) ^ lfsr(13) ^ lfsr(12) ^ lfsr(10))
+
+  io.victim :=
+    (if (cfg.ways == 1) 0.U(cfg.wayBits.W)
+     else lfsr(log2Ceil(cfg.ways) - 1, 0))
 }

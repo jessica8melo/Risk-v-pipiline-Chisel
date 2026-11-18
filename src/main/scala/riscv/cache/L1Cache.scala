@@ -9,15 +9,15 @@ import chisel3.util._
   * arbitra pedidos simultaneos e compartilha o armazenamento entre instrucoes e
   * dados. O pipeline ainda precisa ser conectado separadamente a iCache/dCache.
   */
-class L1Cache extends Module {
+class L1Cache(cfg: CacheConfig = CacheConfig.default) extends Module {
   val io = IO(new Bundle {
     // Pipeline -> Cache (ligar no estagio de fetch e no estagio de memoria)
     val iCache = Flipped(new CpuCacheIO)
     val dCache = Flipped(new CpuCacheIO)
 
     // Cache -> Memoria principal
-    val iMem = new CacheMemIO
-    val dMem = new CacheMemIO
+    val iMem = new CacheMemIO(cfg)
+    val dMem = new CacheMemIO(cfg)
 
     // FENCE.I: drena linhas sujas da DCache e invalida todas as linhas da ICache.
     val fenceI = Input(Bool())
@@ -32,8 +32,8 @@ class L1Cache extends Module {
     val perfClear = Input(Bool()) // zera os contadores das duas caches
   })
 
-  val instructionCache = Module(new Cache(isInstructionCache = true))
-  val dataCache = Module(new Cache(isInstructionCache = false))
+  val instructionCache = Module(new Cache(isInstructionCache = true, cfg = cfg))
+  val dataCache = Module(new Cache(isInstructionCache = false, cfg = cfg))
 
   val fenceIdle :: fenceFlushData :: fenceInvalidateInstruction :: fenceComplete :: Nil =
     Enum(4)

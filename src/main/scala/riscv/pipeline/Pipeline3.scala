@@ -49,7 +49,8 @@ class Pipeline3(
     initialProgram: Seq[Long] = Seq.empty,
     memoryWords: Int = 1024,
     programFile: String = "",
-    memoryLatency: Int = 0
+    memoryLatency: Int = 0,
+    cacheConfig: CacheConfig = CacheConfig.default
 ) extends Module {
   val io = IO(new Bundle {
     val pc = Output(UInt(32.W))
@@ -83,13 +84,14 @@ class Pipeline3(
   // ============================================================
   // 1. INSTANCIAÇÃO DOS MÓDULOS
   // ============================================================
-  val l1Cache = Module(new L1Cache)
+  val l1Cache = Module(new L1Cache(cacheConfig))
   val mainMemory = Module(
     new CacheMainMemory(
       depthWords = memoryWords,
       initialData = initialProgram,
       programFile = programFile,
-      latency = memoryLatency
+      latency = memoryLatency,
+      cfg = cacheConfig
     )
   )
   l1Cache.io.iMem <> mainMemory.io.iMem

@@ -1,0 +1,264 @@
+package riscv.cache
+
+import chisel3._
+import chiseltest._
+import org.scalatest.flatspec.AnyFlatSpec
+import java.io.{File, PrintWriter}
+import scala.collection.mutable
+
+/** Cache + memoria principal (latencia 0) para a varredura de geometria. */
+class CacheUnderTest(cfg: CacheConfig, depthWords: Int) extends Module {
+  val io = IO(new Bundle {
+    val cpu = Flipped(new CpuCacheIO)
+    val perf = Output(new CachePerf)
+    val flushDirty = Input(Bool())
+    val flushDone = Output(Bool())
+  })
+  val cache = Module(new Cache(isInstructionCache = false, cfg = cfg))
+  val mem = Module(new CacheMainMemory(depthWords, cfg = cfg))
+  cache.io.cpu <> io.cpu
+  cache.io.mem <> mem.io.dMem
+  mem.io.iMem.request := false.B
+  mem.io.iMem.write := false.B
+  mem.io.iMem.address := 0.U
+  mem.io.iMem.writeLine := VecInit(Seq.fill(cfg.wordsPerLine)(0.U(32.W)))
+  cache.io.flushDirty := io.flushDirty
+  cache.io.invalidateAll := false.B
+  cache.io.perfClear := false.B
+  io.flushDone := cache.io.flushDone
+  io.perf := cache.io.perf
+}
+
+/** Modelo de referencia (so politicas deterministicas) com a mesma regra da
+  * Cache: via invalida de menor indice primeiro, politica so com o conjunto
+  * cheio.
+  */
+class RefCache(cfg: CacheConfig) {
+  private case class Line(tag: Long, var dirty: Boolean)
+  private val lines =
+    Array.fill(cfg.numSets)(Array.fill[Option[Line]](cfg.ways)(None))
+  private val recency = Array.fill(cfg.numSets)(mutable.ListBuffer[Int]())
+  private val fifoPointer = Array.fill(cfg.numSets)(0)
+  var hits = 0L
+  var misses = 0L
+  var writeBacks = 0L
+
+  private def touch(set: Int, way: Int): Unit = {
+    recency(set) -= way
+    recency(set).prepend(way) // frente = mais recente
+  }
+
+  def access(addr: Long, write: Boolean): Unit = {
+    val lineNumber = addr / cfg.lineBytes
+    val set = (lineNumber % cfg.numSets).toInt
+    val tag = lineNumber / cfg.numSets
+    val ways = lines(set)
+    var way = ways.indexWhere(_.exists(_.tag == tag))
+    if (way >= 0) {
+      hits += 1
+    } else {
+      misses += 1
+      val invalid = ways.indexWhere(_.isEmpty)
+      way =
+        if (invalid >= 0) invalid
+        else
+          cfg.policy match {
+            case ReplacementPolicy.Lru  => recency(set).last
+            case ReplacementPolicy.Fifo => fifoPointer(set)
+            case other                  => sys.error(s"sem modelo para $other")
+          }
+      if (ways(way).exists(_.dirty)) writeBacks += 1
+      ways(way) = Some(Line(tag, dirty = false))
+      fifoPointer(set) = (fifoPointer(set) + 1) % cfg.ways
+    }
+    touch(set, way) // LRU: o acerto que atende o pedido; FIFO ignora
+    if (write) ways(way).get.dirty = true
+  }
+
+  def dirtyLines: Int = lines.map(_.count(_.exists(_.dirty))).sum
+}
+
+/** Varredura de geometria e de politica de substituicao, um eixo por vez com os
+  * demais na linha de base (8 KiB, 4 vias, linha de 16 B, LRU):
+  *   - capacidade: 1, 2, 4, 8, 16 KiB
+  *   - associatividade: 1, 2, 4, 8 vias
+  *   - tamanho de linha: 8, 16, 32, 64 B
+  *   - politica: LRU, FIFO, aleatoria
+  *
+  * Cada configuracao roda o mesmo tipo de trace (leituras e escritas com
+  * footprint maior que a cache), confere o dado devolvido contra um modelo de
+  * memoria, e, para LRU e FIFO, os contadores (hits, misses, write-backs)
+  * contra um modelo de referencia. A taxa de acerto de cada configuracao vai
+  * para `target/cache-sweep.csv`.
+  */
+class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
+  behavior of "CacheConfig"
+
+  it should "derivar a geometria e igualar CacheParams no padrao" in {
+    val c = CacheConfig(capacityBytes = 16 * 1024, ways = 8, lineBytes = 32)
+    assert(c.numSets == 64 && c.numLines == 512)
+    assert(c.offsetBits == 5 && c.indexBits == 6 && c.tagBits == 21)
+    assert(c.wordsPerLine == 8 && c.wayBits == 3)
+    val d = CacheConfig.default
+    assert(d.numSets == CacheParams.numSets && d.tagBits == CacheParams.tagBits)
+    assert(d.wordsPerLine == CacheParams.wordsPerLine)
+  }
+
+  it should "rejeitar geometrias invalidas" in {
+    intercept[IllegalArgumentException] { CacheConfig(ways = 3) }
+    intercept[IllegalArgumentException] { CacheConfig(lineBytes = 4) }
+    intercept[IllegalArgumentException] { CacheConfig(lineBytes = 24) }
+    intercept[IllegalArgumentException] {
+      CacheConfig(capacityBytes = 64, ways = 4, lineBytes = 16)
+    }
+  }
+
+  behavior of "Cache parametrizada (varredura)"
+
+  private val base = CacheConfig()
+  private val sweep: Seq[(String, CacheConfig)] = {
+    val all =
+      Seq(1, 2, 4, 8, 16).map(k =>
+        "capacidade" -> base.copy(capacityBytes = k * 1024)
+      ) ++
+        Seq(1, 2, 4, 8).map(w => "associatividade" -> base.copy(ways = w)) ++
+        Seq(8, 16, 32, 64).map(l => "linha" -> base.copy(lineBytes = l)) ++
+        Seq(
+          ReplacementPolicy.Lru,
+          ReplacementPolicy.Fifo,
+          ReplacementPolicy.Random
+        ).map(p => "politica" -> base.copy(policy = p))
+    // a linha de base aparece em varios eixos: roda uma vez so
+    val seen = mutable.Set[CacheConfig]()
+    all.filter { case (_, c) => seen.add(c) }
+  }
+
+  private val depthWords =
+    16 * 1024 // 64 KiB, cobre o footprint de qualquer config
+  private val results = mutable.ListBuffer[String]()
+
+  private def access(
+      dut: CacheUnderTest,
+      addr: Long,
+      write: Boolean,
+      data: BigInt
+  ): BigInt = {
+    dut.io.cpu.request.poke(true.B)
+    dut.io.cpu.write.poke(write.B)
+    dut.io.cpu.address.poke(BigInt(addr).U(32.W))
+    dut.io.cpu.writeData.poke(data.U(32.W))
+    dut.io.cpu.memSize.poke(2.U)
+    dut.io.cpu.unsignedLoad.poke(false.B)
+    var cycles = 0
+    var read: Option[BigInt] = None
+    while (read.isEmpty) {
+      require(cycles < 2000, "timeout: cache travada")
+      if (dut.io.cpu.hit.peek().litToBoolean)
+        read = Some(dut.io.cpu.readData.peek().litValue)
+      dut.clock.step(1)
+      cycles += 1
+    }
+    dut.io.cpu.request.poke(false.B)
+    read.get
+  }
+
+  for ((axis, cfg) <- sweep) {
+    it should s"funcionar com $axis: ${cfg.label}" in {
+      test(new CacheUnderTest(cfg, depthWords)) { dut =>
+        dut.io.flushDirty.poke(false.B)
+        val rng = new scala.util.Random(42)
+        // footprint 1,5x maior que a cache: forca despejos em todo conjunto
+        val regionLines = cfg.numLines * 3 / 2
+        val accesses = math.min(3200, math.max(600, 3 * cfg.numLines))
+        val memory = mutable.Map[Long, BigInt]() // palavra -> valor
+        val written = mutable.Set[Long]()
+        val ref =
+          if (cfg.policy == ReplacementPolicy.Random) None
+          else Some(new RefCache(cfg))
+
+        for (_ <- 0 until accesses) {
+          // 70% dos pedidos vao para um quarto das linhas (localidade)
+          val lineIdx =
+            if (rng.nextInt(10) < 7) rng.nextInt(regionLines / 4 max 1)
+            else rng.nextInt(regionLines)
+          val word = rng.nextInt(cfg.wordsPerLine)
+          val addr = lineIdx.toLong * cfg.lineBytes + word * 4L
+          val write = rng.nextInt(4) == 0
+          if (write) {
+            val value = BigInt(rng.nextInt()) & 0xffffffffL
+            access(dut, addr, write = true, value)
+            memory(addr) = value
+            written += addr
+          } else {
+            val got = access(dut, addr, write = false, 0)
+            assert(
+              got == memory.getOrElse(addr, BigInt(0)),
+              s"leitura de 0x${addr.toHexString} devolveu $got"
+            )
+          }
+          ref.foreach(_.access(addr, write))
+        }
+
+        val hits = dut.io.perf.hits.peek().litValue.toLong
+        val misses = dut.io.perf.misses.peek().litValue.toLong
+        val writeBacks = dut.io.perf.writeBacks.peek().litValue.toLong
+        assert(
+          hits + misses == accesses,
+          "hits + misses deve igualar os pedidos"
+        )
+        assert(misses >= 1 && hits >= 1, "o trace deve ter acertos e misses")
+        ref.foreach { r =>
+          assert(hits == r.hits, s"hits: DUT $hits, modelo ${r.hits}")
+          assert(misses == r.misses, s"misses: DUT $misses, modelo ${r.misses}")
+          assert(
+            writeBacks == r.writeBacks,
+            s"write-backs: DUT $writeBacks, modelo ${r.writeBacks}"
+          )
+        }
+
+        // FENCE.I-like: o flush grava exatamente as linhas sujas e nada se perde
+        dut.io.flushDirty.poke(true.B)
+        var spin = 0
+        while (!dut.io.flushDone.peek().litToBoolean) {
+          require(spin < 200000, "flush travado")
+          dut.clock.step(1)
+          spin += 1
+        }
+        dut.io.flushDirty.poke(false.B)
+        dut.clock.step(1)
+        ref.foreach { r =>
+          val flushed = dut.io.perf.flushWriteBacks.peek().litValue.toLong
+          assert(
+            flushed == r.dirtyLines,
+            "flush deve gravar so as linhas sujas"
+          )
+        }
+        for (addr <- written) {
+          assert(
+            access(dut, addr, write = false, 0) == memory(addr),
+            s"dado em 0x${addr.toHexString} perdido apos o flush"
+          )
+        }
+
+        val rate = hits.toDouble / accesses
+        results += f"$axis,${cfg.label},${cfg.capacityBytes},${cfg.ways},${cfg.lineBytes},${cfg.policy},$accesses,$hits,$misses,$writeBacks,$rate%.4f"
+        println(
+          f"[sweep] ${cfg.label}%-22s taxa de acerto = ${rate * 100}%.1f%%"
+        )
+      }
+    }
+  }
+
+  it should "gravar a varredura em target/cache-sweep.csv" in {
+    val file = new File("target/cache-sweep.csv")
+    file.getParentFile.mkdirs()
+    val out = new PrintWriter(file)
+    try {
+      out.println(
+        "eixo,config,capacidade_bytes,vias,linha_bytes,politica,acessos,hits,misses,write_backs,taxa_acerto"
+      )
+      results.foreach(out.println)
+    } finally out.close()
+    assert(file.exists())
+  }
+}

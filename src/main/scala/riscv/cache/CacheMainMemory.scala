@@ -32,11 +32,12 @@ class CacheMainMemory(
     depthWords: Int = 1024,
     initialData: Seq[Long] = Seq.empty,
     programFile: String = "",
-    latency: Int = 0
+    latency: Int = 0,
+    cfg: CacheConfig = CacheConfig.default
 ) extends Module {
   require(latency >= 0, "latency nao pode ser negativa")
   require(
-    depthWords >= CacheParams.wordsPerLine,
+    depthWords >= cfg.wordsPerLine,
     "memoria deve conter ao menos uma linha"
   )
   require(isPow2(depthWords), "depthWords deve ser potencia de 2")
@@ -45,7 +46,7 @@ class CacheMainMemory(
     "memoria nao pode exceder o espaco de enderecos de 32 bits"
   )
   require(
-    depthWords % CacheParams.wordsPerLine == 0,
+    depthWords % cfg.wordsPerLine == 0,
     "depthWords deve conter um numero inteiro de linhas de cache"
   )
   require(
@@ -58,8 +59,8 @@ class CacheMainMemory(
   )
 
   val io = IO(new Bundle {
-    val iMem = Flipped(new CacheMemIO)
-    val dMem = Flipped(new CacheMemIO)
+    val iMem = Flipped(new CacheMemIO(cfg))
+    val dMem = Flipped(new CacheMemIO(cfg))
   })
 
   private val wordIndexBits = log2Ceil(depthWords)
@@ -77,7 +78,7 @@ class CacheMainMemory(
   private val selectedAddress = Mux(dSel, io.dMem.address, io.iMem.address)
   private val selectedWrite = Mux(dSel, io.dMem.write, io.iMem.write)
   private val addressAligned =
-    selectedAddress(CacheParams.offsetBits - 1, 0) === 0.U
+    selectedAddress(cfg.offsetBits - 1, 0) === 0.U
   private val addressInRange =
     if (wordIndexBits + 2 < 32) selectedAddress(31, wordIndexBits + 2) === 0.U
     else true.B
@@ -92,11 +93,11 @@ class CacheMainMemory(
     if (latency == 0) selectedRequest && !addressValid
     else busy && selectedRequest && !addressValid && waited === latency.U
   private val selectedWriteLine = Wire(
-    Vec(CacheParams.wordsPerLine, UInt(32.W))
+    Vec(cfg.wordsPerLine, UInt(32.W))
   )
-  private val selectedReadLine = Wire(Vec(CacheParams.wordsPerLine, UInt(32.W)))
+  private val selectedReadLine = Wire(Vec(cfg.wordsPerLine, UInt(32.W)))
 
-  for (word <- 0 until CacheParams.wordsPerLine) {
+  for (word <- 0 until cfg.wordsPerLine) {
     selectedWriteLine(word) := Mux(
       dSel,
       io.dMem.writeLine(word),
@@ -113,7 +114,7 @@ class CacheMainMemory(
     val memory = Mem(depthWords, UInt(32.W))
     loadMemoryFromFileInline(memory, programFile)
 
-    for (word <- 0 until CacheParams.wordsPerLine) {
+    for (word <- 0 until cfg.wordsPerLine) {
       val wordAddress = baseWord + word.U
       selectedReadLine(word) := memory(wordAddress)
       when(complete && selectedWrite) {
@@ -140,7 +141,7 @@ class CacheMainMemory(
     )
     val written = RegInit(VecInit(Seq.fill(romSize)(false.B)))
 
-    for (word <- 0 until CacheParams.wordsPerLine) {
+    for (word <- 0 until cfg.wordsPerLine) {
       val wordAddress = baseWord + word.U
       if (preloaded == 0) {
         selectedReadLine(word) := memory(wordAddress)
@@ -168,7 +169,7 @@ class CacheMainMemory(
   io.iMem.ready := !dSel && complete
   io.dMem.fault := dSel && faulted
   io.iMem.fault := !dSel && faulted
-  for (word <- 0 until CacheParams.wordsPerLine) {
+  for (word <- 0 until cfg.wordsPerLine) {
     io.dMem.readLine(word) := Mux(addressValid, selectedReadLine(word), 0.U)
     io.iMem.readLine(word) := Mux(addressValid, selectedReadLine(word), 0.U)
   }

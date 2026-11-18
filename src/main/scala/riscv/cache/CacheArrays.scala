@@ -4,11 +4,11 @@ import chisel3._
 import chisel3.util._
 
 /** Resultado da leitura combinacional de UMA via no conjunto selecionado. */
-class CacheLineRead extends Bundle {
-  val tag = UInt(CacheParams.tagBits.W)
+class CacheLineRead(cfg: CacheConfig = CacheConfig.default) extends Bundle {
+  val tag = UInt(cfg.tagBits.W)
   val valid = Bool()
   val dirty = Bool()
-  val data = Vec(CacheParams.wordsPerLine, UInt(32.W))
+  val data = Vec(cfg.wordsPerLine, UInt(32.W))
 }
 
 /** Porta de escrita dos arrays (uma via por vez).
@@ -18,14 +18,14 @@ class CacheLineRead extends Bundle {
   *   - `metaEn` grava tag/valid/dirty da via (refill, store hit -> dirty,
   *     etc.). Pode ser usado sem gravar dado (wordMask toda em false).
   */
-class CacheWritePort extends Bundle {
+class CacheWritePort(cfg: CacheConfig = CacheConfig.default) extends Bundle {
   val en = Bool()
-  val way = UInt(log2Ceil(CacheParams.ways).W)
-  val index = UInt(CacheParams.indexBits.W)
-  val wordMask = Vec(CacheParams.wordsPerLine, Bool())
-  val data = Vec(CacheParams.wordsPerLine, UInt(32.W))
+  val way = UInt(cfg.wayBits.W)
+  val index = UInt(cfg.indexBits.W)
+  val wordMask = Vec(cfg.wordsPerLine, Bool())
+  val data = Vec(cfg.wordsPerLine, UInt(32.W))
   val metaEn = Bool()
-  val tag = UInt(CacheParams.tagBits.W)
+  val tag = UInt(cfg.tagBits.W)
   val valid = Bool()
   val dirty = Bool()
 }
@@ -42,28 +42,28 @@ class CacheWritePort extends Bundle {
   * leitura e escrita no mesmo indice no mesmo ciclo, a leitura devolve o valor
   * ANTIGO (a escrita so vale no proximo ciclo).
   */
-class CacheArrays extends Module {
+class CacheArrays(cfg: CacheConfig = CacheConfig.default) extends Module {
   val io = IO(new Bundle {
-    val readIndex = Input(UInt(CacheParams.indexBits.W))
-    val read = Output(Vec(CacheParams.ways, new CacheLineRead))
-    val write = Input(new CacheWritePort)
+    val readIndex = Input(UInt(cfg.indexBits.W))
+    val read = Output(Vec(cfg.ways, new CacheLineRead(cfg)))
+    val write = Input(new CacheWritePort(cfg))
     val invalidateAll = Input(Bool())
   })
 
-  private val sets = CacheParams.numSets
+  private val sets = cfg.numSets
   private val tagMem =
-    Seq.fill(CacheParams.ways)(Mem(sets, UInt(CacheParams.tagBits.W)))
-  private val dataMem = Seq.fill(CacheParams.ways)(
-    Mem(sets, Vec(CacheParams.wordsPerLine, UInt(32.W)))
+    Seq.fill(cfg.ways)(Mem(sets, UInt(cfg.tagBits.W)))
+  private val dataMem = Seq.fill(cfg.ways)(
+    Mem(sets, Vec(cfg.wordsPerLine, UInt(32.W)))
   )
   private val validBits = RegInit(
-    VecInit(Seq.fill(CacheParams.ways)(VecInit(Seq.fill(sets)(false.B))))
+    VecInit(Seq.fill(cfg.ways)(VecInit(Seq.fill(sets)(false.B))))
   )
   private val dirtyBits = RegInit(
-    VecInit(Seq.fill(CacheParams.ways)(VecInit(Seq.fill(sets)(false.B))))
+    VecInit(Seq.fill(cfg.ways)(VecInit(Seq.fill(sets)(false.B))))
   )
 
-  for (w <- 0 until CacheParams.ways) {
+  for (w <- 0 until cfg.ways) {
     // Leitura combinacional
     io.read(w).tag := tagMem(w).read(io.readIndex)
     io.read(w).data := dataMem(w).read(io.readIndex)
@@ -82,7 +82,7 @@ class CacheArrays extends Module {
   }
 
   when(io.invalidateAll) {
-    for (w <- 0 until CacheParams.ways; set <- 0 until sets) {
+    for (w <- 0 until cfg.ways; set <- 0 until sets) {
       validBits(w)(set) := false.B
       dirtyBits(w)(set) := false.B
     }
