@@ -116,4 +116,116 @@ class CacheMainMemoryTest extends AnyFlatSpec with ChiselScalatestTester {
       dut.io.iMem.readLine(3).expect("h55AA55AA".U)
     }
   }
+
+  // --- armazenamento em Mem + ROM de pre-carga ---------------------------------
+
+  private def writeLine(
+      dut: CacheMainMemory,
+      address: Int,
+      words: Seq[Long]
+  ): Unit = {
+    dut.io.dMem.request.poke(true.B)
+    dut.io.dMem.write.poke(true.B)
+    dut.io.dMem.address.poke(address.U)
+    for (word <- words.indices)
+      dut.io.dMem.writeLine(word).poke(words(word).U(32.W))
+    dut.io.dMem.ready.expect(true.B)
+    dut.clock.step(1)
+    dut.io.dMem.request.poke(false.B)
+    dut.io.dMem.write.poke(false.B)
+  }
+
+  private def readLine(dut: CacheMainMemory, address: Int): Seq[BigInt] = {
+    dut.io.iMem.request.poke(true.B)
+    dut.io.iMem.address.poke(address.U)
+    dut.io.iMem.ready.expect(true.B)
+    val words = (0 until CacheParams.wordsPerLine).map(w =>
+      dut.io.iMem.readLine(w).peekInt()
+    )
+    dut.io.iMem.request.poke(false.B)
+    words
+  }
+
+  it should "devolver zero fora da area pre-carregada e sem dados iniciais" in {
+    test(
+      new CacheMainMemory(
+        depthWords = 16,
+        initialData = Seq(1L, 2L, 3L, 4L, 5L)
+      )
+    ) { dut =>
+      initialize(dut)
+      assert(readLine(dut, 0) == Seq(1, 2, 3, 4).map(BigInt(_)))
+      // linha 1 tem so a primeira palavra pre-carregada; o resto precisa ser zero
+      assert(readLine(dut, 16) == Seq(5, 0, 0, 0).map(BigInt(_)))
+      assert(readLine(dut, 32) == Seq.fill(4)(BigInt(0)))
+      assert(readLine(dut, 48) == Seq.fill(4)(BigInt(0)))
+    }
+    test(new CacheMainMemory(depthWords = 16)) { dut =>
+      initialize(dut)
+      for (address <- Seq(0, 16, 32, 48)) {
+        assert(
+          readLine(dut, address) == Seq.fill(4)(BigInt(0)),
+          s"linha em $address"
+        )
+      }
+    }
+  }
+
+  it should "sobrescrever a area pre-carregada sem afetar o restante" in {
+    test(
+      new CacheMainMemory(
+        depthWords = 16,
+        initialData = Seq(1L, 2L, 3L, 4L, 5L, 6L)
+      )
+    ) { dut =>
+      initialize(dut)
+      writeLine(dut, 16, Seq(0xaaL, 0xbbL, 0xccL, 0xddL))
+
+      assert(readLine(dut, 16) == Seq(0xaa, 0xbb, 0xcc, 0xdd).map(BigInt(_)))
+      assert(
+        readLine(dut, 0) == Seq(1, 2, 3, 4).map(BigInt(_)),
+        "linha 0 nao pode mudar"
+      )
+
+      // escrever uma linha fora da ROM nao pode reviver o conteudo da ROM
+      writeLine(dut, 32, Seq(9L, 8L, 7L, 6L))
+      assert(readLine(dut, 32) == Seq(9, 8, 7, 6).map(BigInt(_)))
+      assert(readLine(dut, 16) == Seq(0xaa, 0xbb, 0xcc, 0xdd).map(BigInt(_)))
+
+      // reescrever a linha 0 com zeros: o valor novo vence o pre-carregado
+      writeLine(dut, 0, Seq(0L, 0L, 0L, 0L))
+      assert(readLine(dut, 0) == Seq.fill(4)(BigInt(0)))
+    }
+  }
+
+  it should "funcionar quando initialData ocupa a memoria inteira" in {
+    val data = (1L to 8L).toSeq
+    test(new CacheMainMemory(depthWords = 8, initialData = data)) { dut =>
+      initialize(dut)
+      assert(readLine(dut, 0) == data.take(4).map(BigInt(_)))
+      assert(readLine(dut, 16) == data.drop(4).map(BigInt(_)))
+      writeLine(dut, 16, Seq(0x10L, 0x20L, 0x30L, 0x40L))
+      assert(readLine(dut, 16) == Seq(0x10, 0x20, 0x30, 0x40).map(BigInt(_)))
+      assert(readLine(dut, 0) == data.take(4).map(BigInt(_)))
+    }
+  }
+
+  it should "preservar palavras com bit 31 em 1 na pre-carga" in {
+    test(
+      new CacheMainMemory(
+        depthWords = 8,
+        initialData = Seq(0xffffffffL, 0x80000000L, 0L, 1L)
+      )
+    ) { dut =>
+      initialize(dut)
+      assert(
+        readLine(dut, 0) == Seq(
+          BigInt(0xffffffffL),
+          BigInt(0x80000000L),
+          BigInt(0),
+          BigInt(1)
+        )
+      )
+    }
+  }
 }

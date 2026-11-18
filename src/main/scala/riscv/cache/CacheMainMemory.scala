@@ -117,14 +117,45 @@ class CacheMainMemory(
       }
     }
   } else {
-    val initialWords = initialData.padTo(depthWords, 0L).map(_.U(32.W))
-    val memory = RegInit(VecInit(initialWords))
+    // Armazenamento em `Mem` (um bloco so), nao em um registrador por palavra:
+    // um Vec de `depthWords` registradores gera milhares de muxes/escritas
+    // condicionais e deixa elaboracao e simulacao muito lentas.
+    //
+    // As palavras de `initialData` ficam numa ROM pequena (tamanho potencia de
+    // 2, so o necessario para o programa). Um bit `written` por palavra da ROM
+    // diz se ela ja foi sobrescrita; enquanto nao foi, a leitura vem da ROM,
+    // depois passa a vir da `Mem`. Fora da ROM a leitura vem direto da `Mem`,
+    // que comeca zerada na simulacao Chisel (Treadle). Em Verilog, uma `Mem`
+    // sem arquivo nao tem valor inicial definido: para isso use `programFile`.
+    val memory = Mem(depthWords, UInt(32.W))
+    val preloaded = initialData.length
+    val romBits = log2Ceil(math.max(preloaded, 2))
+    val romSize = 1 << romBits
+    val rom = VecInit(
+      initialData.padTo(romSize, 0L).map(word => (word & 0xffffffffL).U(32.W))
+    )
+    val written = RegInit(VecInit(Seq.fill(romSize)(false.B)))
 
     for (word <- 0 until CacheParams.wordsPerLine) {
       val wordAddress = baseWord + word.U
-      selectedReadLine(word) := memory(wordAddress)
+      if (preloaded == 0) {
+        selectedReadLine(word) := memory(wordAddress)
+      } else {
+        val romIndex = wordAddress(romBits - 1, 0)
+        val readFromRom = (wordAddress < preloaded.U) && !written(romIndex)
+        selectedReadLine(word) := Mux(
+          readFromRom,
+          rom(romIndex),
+          memory(wordAddress)
+        )
+      }
       when(complete && selectedWrite) {
         memory(wordAddress) := selectedWriteLine(word)
+        if (preloaded > 0) {
+          when(wordAddress < preloaded.U) {
+            written(wordAddress(romBits - 1, 0)) := true.B
+          }
+        }
       }
     }
   }
