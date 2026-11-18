@@ -56,6 +56,31 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
     */
   private case class Trapping(name: String, pre: Seq[Long], tested: Long)
 
+  /** Cenario reto em que `tested` e alinhada em PC % 16 == `offset`, para
+    * variar em que ponto da busca (linha fria da ICache) a instrucao cai.
+    */
+  private case class AlignedAt(
+      name: String,
+      pre: Seq[Long],
+      tested: Long,
+      post: Seq[Long],
+      offset: Int
+  )
+
+  /** LR.W (carrega a linha na DCache e reserva) + SC.W alinhado em `offset`.
+    * O hit da DCache do SC pode cair no meio de um miss da ICache (busca das
+    * instrucoes seguintes), quando `exCanCommit` ainda e falso: a reserva nao
+    * pode ser apagada pelo proprio SC antes do commit.
+    */
+  private def scAt(offset: Int, addr: Int) =
+    AlignedAt(
+      s"sc-align-$offset",
+      Seq(addi(2, 0, addr), addi(6, 0, 0x77), lrw(3, 2)),
+      scw(4, 2, 6),
+      Seq(lw(5, 2, 0)),
+      offset
+    )
+
   private val DataAddr = 0x300 // regiao de dados, longe do codigo
   private val ChainSums = Seq(1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 66, 78)
 
@@ -111,12 +136,17 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
     Trapping("trap-lw", Seq(addi(2, 0, 0x361)), lw(3, 2, 0)),
     Trapping("trap-sw", Seq(addi(2, 0, 0x362), addi(6, 0, 0x99)), sw(6, 2, 0)),
     Plain("sw-nao-escreveu", Seq(addi(2, 0, 0x360), lw(3, 2, 0))),
-    Trapping("trap-amo", Seq(addi(2, 0, 0x372), addi(6, 0, 1)), amoadd(3, 2, 6))
+    Trapping("trap-amo", Seq(addi(2, 0, 0x372), addi(6, 0, 1)), amoadd(3, 2, 6)),
+    scAt(0, 0x380),
+    scAt(4, 0x390),
+    scAt(8, 0x3a0),
+    scAt(12, 0x3b0)
   )
 
   private def nameOf(s: Any): String = s match {
     case p: Plain    => p.name
     case t: Trapping => t.name
+    case a: AlignedAt => a.name
   }
   private def idx(name: String): Int = scenarios.indexWhere(nameOf(_) == name)
 
@@ -132,6 +162,12 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
     for ((sc, k) <- scenarios.zipWithIndex) sc match {
       case Plain(_, code) =>
         out ++= code
+        out += addi(9, 0, k + 1)
+      case AlignedAt(_, pre, tested, post, offset) =>
+        out ++= pre
+        while (pc % 16 != offset) out += NOP
+        out += tested
+        out ++= post
         out += addi(9, 0, k + 1)
       case Trapping(name, pre, tested) =>
         out ++= pre
@@ -271,6 +307,21 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
         writesOf(lat, "sc-sem-reserva", 5) == Seq(BigInt(0)),
         "SC falho nao pode gravar"
       )
+    }
+
+    it should s"fazer SC ter sucesso e gravar mesmo com o hit da DCache durante miss da ICache (latencia $lat)" in {
+      for (off <- Seq(0, 4, 8, 12)) {
+        val n = s"sc-align-$off"
+        assert(writesOf(lat, n, 3) == Seq(BigInt(0)), s"$n: LR")
+        assert(
+          writesOf(lat, n, 4) == Seq(BigInt(0)),
+          s"$n: SC com reserva valida deve devolver 0 (devolveu ${writesOf(lat, n, 4)})"
+        )
+        assert(
+          writesOf(lat, n, 5) == Seq(BigInt(0x77)),
+          s"$n: SC com sucesso deve ter gravado 0x77"
+        )
+      }
     }
 
     it should s"tomar trap de desalinhamento com a busca seguinte ainda em miss (latencia $lat)" in {
