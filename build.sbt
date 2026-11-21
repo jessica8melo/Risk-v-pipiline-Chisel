@@ -15,3 +15,7 @@ addCompilerPlugin("edu.berkeley.cs" % "chisel3-plugin" % chiselVersion cross Cro
 
 libraryDependencies += "edu.berkeley.cs" %% "chisel3" % chiselVersion
 libraryDependencies += "edu.berkeley.cs" %% "chiseltest" % "0.6.1"
+
+Test / fork := true
+Test / testForkedParallel := true
+Test / javaOptions ++= Seq("-Xss16m")
