@@ -133,8 +133,13 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
     all.filter { case (_, c) => seen.add(c) }
   }
 
-  private val depthWords =
-    16 * 1024 // 64 KiB, cobre o footprint de qualquer config
+  // Memoria de cada config: potencia de 2 que cobre o footprint do trace (1,5x a
+  // capacidade). O custo do Treadle cresce com o tamanho do design, entao nao se
+  // usa uma memoria unica de 64 KiB para todas as configs.
+  private def depthWordsFor(cfg: CacheConfig): Int = {
+    val footprintWords = cfg.capacityBytes * 3 / 2 / 4
+    math.max(256, Integer.highestOneBit(footprintWords - 1) << 1)
+  }
   private val results = mutable.ListBuffer[String]()
 
   private def access(
@@ -143,12 +148,12 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
       write: Boolean,
       data: BigInt
   ): BigInt = {
+    // Cada poke custa uma avaliacao do circuito no Treadle: so se escreve o que
+    // muda (memSize e unsignedLoad sao fixados uma vez em `initCpu`).
     dut.io.cpu.request.poke(true.B)
     dut.io.cpu.write.poke(write.B)
     dut.io.cpu.address.poke(BigInt(addr).U(32.W))
-    dut.io.cpu.writeData.poke(data.U(32.W))
-    dut.io.cpu.memSize.poke(2.U)
-    dut.io.cpu.unsignedLoad.poke(false.B)
+    if (write) dut.io.cpu.writeData.poke(data.U(32.W))
     var cycles = 0
     var read: Option[BigInt] = None
     while (read.isEmpty) {
@@ -162,9 +167,19 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
     read.get
   }
 
+  private def initCpu(dut: CacheUnderTest): Unit = {
+    dut.io.cpu.request.poke(false.B)
+    dut.io.cpu.write.poke(false.B)
+    dut.io.cpu.address.poke(0.U)
+    dut.io.cpu.writeData.poke(0.U)
+    dut.io.cpu.memSize.poke(2.U) // palavra
+    dut.io.cpu.unsignedLoad.poke(false.B)
+  }
+
   for ((axis, cfg) <- sweep) {
     it should s"funcionar com $axis: ${cfg.label}" in {
-      test(new CacheUnderTest(cfg, depthWords)) { dut =>
+      test(new CacheUnderTest(cfg, depthWordsFor(cfg))) { dut =>
+        initCpu(dut)
         dut.io.flushDirty.poke(false.B)
         val rng = new scala.util.Random(42)
         // footprint 1,5x maior que a cache: forca despejos em todo conjunto

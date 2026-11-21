@@ -370,7 +370,12 @@ class Pipeline3(
   reservation.io.lrCommit := isLR && exCanCommit
   reservation.io.scCommit := isSC && exCanCommit
   reservation.io.amoCommit := isAMO && exCanCommit
-  reservation.io.storeHit := l1Cache.io.dCache.hit && idEx.signals.memWrite
+  // O proprio SC fica de fora: o hit da DCache dele pode chegar antes do commit
+  // (ex.: durante um miss de ICache). Se ele apagasse a reserva aqui, o SC
+  // gravaria na memoria mas `scSuccess` veria "sem reserva" e devolveria falha.
+  // O SC consome a reserva no commit (`scCommit`).
+  reservation.io.storeHit :=
+    l1Cache.io.dCache.hit && idEx.signals.memWrite && !idEx.signals.isSC
   reservation.io.invalidate := io.illegal || idEx.signals.illegal
 
   val scSuccess = isSC && exCanCommit && scHasReservation

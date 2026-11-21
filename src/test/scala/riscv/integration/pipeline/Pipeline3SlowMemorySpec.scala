@@ -5,6 +5,7 @@ import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Try
+import riscv.cache.CacheConfig
 import riscv.pipeline.Pipeline3
 
 /** Pipeline3 completo sobre uma memoria principal lenta (`memoryLatency`).
@@ -293,13 +294,21 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
   // ---- simulacao --------------------------------------------------------
   private type Segment = Seq[(Int, BigInt)] // writebacks (rd != 0) em ordem
 
+  // O custo do Treadle cresce com o quadrado do tamanho do design, e estes
+  // cenarios testam latencia de memoria, nao geometria: usam uma cache pequena
+  // (1 KiB, 16 conjuntos). O codigo (< 0x300 B) cabe na ICache e os enderecos de
+  // dados (0x300..0x3bf) caem em conjuntos distintos.
+  private val SmallCache =
+    CacheConfig(capacityBytes = 1024, ways = 4, lineBytes = 16)
+
   private def runAll(latency: Int, maxCycles: Int = 8000): Seq[Segment] = {
     val log = ArrayBuffer.empty[(Int, BigInt)]
     test(
       new Pipeline3(
         initialProgram = built.program,
         memoryWords = 256,
-        memoryLatency = latency
+        memoryLatency = latency,
+        cacheConfig = SmallCache
       )
     ) { dut =>
       var cycle = 0

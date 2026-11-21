@@ -8,8 +8,12 @@ import scala.util.Random
 /** DUT de integracao: L1Cache (ICache + DCache) ligada a uma CacheMainMemory
   * com latencia configuravel. Expoe so o lado da CPU e o FENCE.I.
   */
-class L1WithMemory(latency: Int, depthWords: Int, initialData: Seq[Long])
-    extends Module {
+class L1WithMemory(
+    latency: Int,
+    depthWords: Int,
+    initialData: Seq[Long],
+    cfg: CacheConfig = CacheConfig.default
+) extends Module {
   val io = IO(new Bundle {
     val iCache = Flipped(new CpuCacheIO)
     val dCache = Flipped(new CpuCacheIO)
@@ -17,10 +21,10 @@ class L1WithMemory(latency: Int, depthWords: Int, initialData: Seq[Long])
     val fenceIDone = Output(Bool())
   })
 
-  val l1 = Module(new L1Cache)
+  val l1 = Module(new L1Cache(cfg))
   l1.io.perfClear := false.B
   val mem = Module(
-    new CacheMainMemory(depthWords, initialData, latency = latency)
+    new CacheMainMemory(depthWords, initialData, latency = latency, cfg = cfg)
   )
 
   l1.io.iMem <> mem.io.iMem
@@ -235,20 +239,24 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
   private case class Done(data: BigInt, cycles: Int)
 
   private val DataBase = 0x40L // set 4 (indice), longe da regiao de codigo
+  // Cache pequena (1 KiB, 4 vias, 16 conjuntos): o custo do Treadle cresce com o
+  // quadrado do tamanho do design, e estes cenarios testam latencia de memoria,
+  // nao geometria. O `DataBase` continua no conjunto 4 e `DataBase + 0x10` no 5.
+  private val TestCfg =
+    CacheConfig(capacityBytes = 1024, ways = 4, lineBytes = 16)
   private val WayStride =
-    CacheParams.numSets.toLong * CacheParams.lineBytes // mesmo set, tag diferente
-  // Cada compilacao do treadle e cara e cresce com a memoria (um Reg por palavra),
-  // entao ha dois tamanhos: o pequeno para a maioria dos cenarios e o grande so
-  // para os que precisam de 5 tags no mesmo set (despejo).
-  private val SmallWords = 1024 // 4 KiB
-  private val MemWords = 4096 // 16 KiB: cabe DataBase + 5 * WayStride
+    TestCfg.numSets.toLong * TestCfg.lineBytes // mesmo set, tag diferente (256 B)
+  // Dois tamanhos de memoria: o pequeno para a maioria dos cenarios e o maior so
+  // para os que precisam de 5 a 6 tags no mesmo set (despejo).
+  private val SmallWords = 256 // 1 KiB
+  private val MemWords = 512 // 2 KiB: cabe DataBase + 0x10 + 5 * WayStride + 12
 
   private def code(n: Int): Long =
     0x13L + (n.toLong << 7) // palavras de "codigo" distintas
   private val codeWords: Seq[Long] = (0 until 16).map(code)
 
   private def newSystem(latency: Int, words: Int) =
-    new L1WithMemory(latency, words, codeWords)
+    new L1WithMemory(latency, words, codeWords, TestCfg)
 
   /** Reinicia o DUT (caches, memoria e FSMs voltam ao estado inicial) para
     * reaproveitar uma unica compilacao em varios cenarios independentes.
