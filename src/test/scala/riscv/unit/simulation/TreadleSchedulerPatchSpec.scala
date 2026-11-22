@@ -10,7 +10,9 @@ class TreadleSchedulerPatchSpec extends AnyFlatSpec {
   behavior of "Scheduler do Treadle"
 
   it should "vir da copia corrigida em test-classes, nao do jar do Treadle" in {
-    val location = classOf[treadle.executable.Scheduler].getProtectionDomain.getCodeSource.getLocation.toString
+    val location = classOf[
+      treadle.executable.Scheduler
+    ].getProtectionDomain.getCodeSource.getLocation.toString
     assert(
       location.contains("test-classes"),
       s"Scheduler carregado de $location; esperado test-classes. " +
