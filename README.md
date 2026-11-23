@@ -199,6 +199,22 @@ Nao ha suporte por hardware. O endereco e checado no EX, antes de a DCache ver o
 - `mtval` recebe o endereco efetivo que falhou e `mepc` o PC da instrucao.
 - `LR.W`, `SC.W` e `AMO*.W` exigem alinhamento de 4 bytes; `SC.W` desalinhado gera trap mesmo sem reserva.
 
+### Access faults e instrucao ilegal
+
+Tres excecoes sincronas sao tomadas no estagio EX, com `mepc` = PC da instrucao (que nao tem efeito algum) e `mtval` conforme a causa:
+
+| Causa | `mcause` | `mtval` |
+|---|---|---|
+| Busca recusada pela memoria (instruction access fault) | 1 | endereco que falhou (o PC, ou a palavra seguinte se a instrucao cruza palavras) |
+| Instrucao ilegal | 2 | encoding original (16 bits, se comprimida) |
+| Load ou `LR.W` fora da memoria | 5 | endereco efetivo |
+| Store, `SC.W` ou `AMO*.W` fora da memoria | 7 | endereco efetivo |
+
+- **Busca:** o `InstructionFetch` marca o slot com `fault` e o marcador viaja ate o EX, para que as instrucoes mais antigas terminem antes da trap (um desvio mais antigo pode descartar a busca errada). Depois de uma falha a busca para ate o proximo flush.
+- **Dados:** o `fault` da DCache encerra a espera do pipeline; a trap sai assim que nao houver miss de ICache pendente. Os arrays e a memoria nao mudam.
+- **Instrucao ilegal:** inclui opcode invalido, RVC ilegal, `pc[0]` impar e a palavra `0x00000000`. **Programas de teste precisam terminar em um laco** (`jal x0, 0`), porque cair na memoria vazia agora gera trap (com `mtvec = 0`, o programa reinicia).
+- Prioridade quando mais de uma vale: busca (1), ilegal (2), desalinhado (4/6), dados (5/7); na pratica sao exclusivas.
+
 ## Sistema de cache
 
 - **Geometria padrao:** L1 dividida em ICache e DCache, 8 KiB cada, 4 vias, linha de 16 B (4 palavras), reposicao LRU, write-back com write-allocate, controlador bloqueante. A premissa e que os 16 KiB do enunciado sao a soma das duas.
@@ -208,13 +224,11 @@ Nao ha suporte por hardware. O endereco e checado no EX, antes de a DCache ver o
 - **Contrato com a CPU:** enquanto `stall` esta alto, o pedido (`request`, `write`, `address`, ...) deve ficar estavel. Por isso o pipeline so desvia, trata trap ou termina `FENCE.I` quando nao ha espera de cache.
 - **Coerencia:** ICache e DCache so se sincronizam por `FENCE.I` (grava as linhas dirty da DCache e invalida a ICache), como manda a especificacao.
 - **Memoria principal** (`CacheMainMemory`): `latency = 0` responde no mesmo ciclo; com `latency >= 1` atende uma transacao por vez, com prioridade da DCache em caso de empate. O tamanho padrao do `Pipeline3` (`memoryWords = 1024`, 4 KiB) e menor que as caches; para experimentos de cache use uma memoria bem maior.
-- **Canal de falha:** um pedido fora da capacidade (ou desalinhado) e recusado pela memoria com `fault` no lugar de `ready` (a leitura devolve zero e nada e escrito). A `Cache` vai ao estado `sFault` e levanta `io.cpu.fault` ate a CPU derrubar o pedido; os arrays nao mudam. A convencao prevista e: ICache = instruction access fault (`mcause 1`); DCache = load (`5`) ou store/AMO (`7`) access fault, com `mtval = address`. O `L1Cache` tambem expoe `fenceIFault` quando um write-back do `FENCE.I` e recusado. **Ainda nao ha trap no `Pipeline3`** para esses sinais.
+- **Canal de falha:** um pedido fora da capacidade (ou desalinhado) e recusado pela memoria com `fault` no lugar de `ready` (a leitura devolve zero e nada e escrito). A `Cache` vai ao estado `sFault` e levanta `io.cpu.fault` ate a CPU derrubar o pedido; os arrays nao mudam. A convencao prevista e: ICache = instruction access fault (`mcause 1`); DCache = load (`5`) ou store/AMO (`7`) access fault, com `mtval = address`. O `L1Cache` tambem expoe `fenceIFault` quando um write-back do `FENCE.I` e recusado. O `Pipeline3` converte esses sinais em trap (ver "Access faults e instrucao ilegal").
 - **Contadores de desempenho** (`CachePerf`, 64 bits, em `L1Cache.io.iPerf` e `io.dPerf`; `io.perfClear` zera os das duas caches): `hits`, `misses` (um miss seguido de refill conta 1, e o hit que atende o pedido depois do refill nao entra em `hits`), `writeBacks` (despejo de linha suja), `flushWriteBacks` (flush do `FENCE.I`), `faults` e `missCycles` (penalidade de miss acumulada). Eles ainda nao sao expostos no `Pipeline3` nem em CSRs.
 
 ## Pendencias conhecidas
 
-- Trap de access fault (`mcause 1`, `5`, `7`) no `Pipeline3`: o canal de falha ja chega ate a cache, mas o pipeline ainda nao o converte em trap.
-- Excecao de instrucao ilegal (`mcause 2`): hoje a instrucao ilegal so vira um sinal de saida.
 - `DIV`, `DIVU`, `REM` e `REMU` (extensao M so tem multiplicacao).
 - Interrupcoes: o timer esta desligado (sem `mtime`/`mtimecmp`) e nao ha `WFI` nem interrupcao externa.
 - Contadores `mcycle`/`minstret` e a exposicao dos contadores da cache no `Pipeline3`.

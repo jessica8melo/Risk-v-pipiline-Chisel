@@ -29,6 +29,11 @@ class DecodeExecuteBundle extends Bundle {
   val csrAddress = UInt(12.W)
   val csrWriteData = UInt(32.W)
   val csrReadData = UInt(32.W)
+  // Busca que falhou (instruction access fault) e encoding original da
+  // instrucao (mtval de uma instrucao ilegal).
+  val fetchFault = Bool()
+  val fetchFaultAddr = UInt(32.W)
+  val rawInstr = UInt(32.W)
 }
 
 /** Pipeline RV32 com instruções comprimidas, de 3 estágios, inspirado no
@@ -117,6 +122,12 @@ class Pipeline3(
   val ifIdValid = RegInit(false.B)
   val ifIdLength = RegInit(4.U(3.W))
   val ifIdIllegal = RegInit(false.B)
+  val ifIdFault = RegInit(false.B)
+  val ifIdFaultAddr = RegInit(0.U(32.W))
+  val ifIdRaw = RegInit(nop)
+  // Depois de uma falha de busca, para de buscar ate o proximo flush (trap ou
+  // desvio): as instrucoes seguintes seriam descartadas de qualquer jeito.
+  val fetchHalted = RegInit(false.B)
   val idEx = RegInit(0.U.asTypeOf(new DecodeExecuteBundle))
 
   // Registrador de WB para o load durante stall
@@ -209,7 +220,8 @@ class Pipeline3(
   // a palavra fica no buffer e o fetch nao e repetido. Durante FENCE.I nao ha
   // pedido a ICache (ela esta sendo invalidada).
   fetch.io.pc := pcReg
-  fetch.io.enable := !fenceIRequest
+  fetch.io.enable := !fenceIRequest && !fetchHalted
+  fetch.io.memoryFault := l1Cache.io.iCache.fault
   fetch.io.flush := flushPipeline
   fetch.io.memoryReady := l1Cache.io.iCache.hit
   fetch.io.memoryData := l1Cache.io.iCache.readData
@@ -307,14 +319,43 @@ class Pipeline3(
     )
   )
   val misalignTrap = exMemAccess && exMisaligned
+
+  // Outras excecoes sincronas detectadas na instrucao do EX:
+  //   - instruction access fault (mcause 1): a busca desta instrucao foi
+  //     recusada pela memoria (o marcador viaja desde o IF);
+  //   - instrucao ilegal (mcause 2): mtval = encoding original;
+  //   - load/store access fault (mcause 5/7): a DCache sinalizou `fault`
+  //     (ligado na secao 14), mtval = endereco efetivo.
+  val fetchFaultTrap = idEx.valid && idEx.fetchFault
+  val illegalTrap = idEx.valid && idEx.signals.illegal
+  val dataFaultTrap = WireDefault(false.B)
+  val excTrap = fetchFaultTrap || illegalTrap || misalignTrap || dataFaultTrap
   // Como o redirecionamento de desvios, a trap so e tomada quando nao ha
   // espera de cache (evita mudar pcReg no meio de um miss da ICache).
-  val takeTrap = misalignTrap && !cacheWait
+  val takeTrap = excTrap && !cacheWait
 
   clint.io.exc_valid := takeTrap
-  clint.io.exc_cause := Mux(exIsStore, 6.U(31.W), 4.U(31.W))
+  // As condicoes sao exclusivas (instrucao ilegal ou marcador de falha nao
+  // acessam a DCache); a ordem do Mux so documenta a prioridade.
+  clint.io.exc_cause := Mux(
+    fetchFaultTrap,
+    1.U(31.W),
+    Mux(
+      illegalTrap,
+      2.U(31.W),
+      Mux(
+        misalignTrap,
+        Mux(exIsStore, 6.U(31.W), 4.U(31.W)),
+        Mux(exIsStore, 7.U(31.W), 5.U(31.W))
+      )
+    )
+  )
   clint.io.exc_pc := idEx.pc
-  clint.io.exc_tval := idEx.memAddress
+  clint.io.exc_tval := Mux(
+    fetchFaultTrap,
+    idEx.fetchFaultAddr,
+    Mux(illegalTrap, idEx.rawInstr, idEx.memAddress)
+  )
   // Destino da trap: excecoes usam o endereco base de mtvec/stvec (bits de MODE
   // ignorados); MRET/SRET usam mepc/sepc (bit 0 ignorado, RVC permite PC par).
   val trapTarget = Mux(
@@ -339,7 +380,7 @@ class Pipeline3(
   val currentUsesRd = (usesRs1 && idRs1 === idEx.rd && idRs1 =/= 0.U) ||
     (usesRs2 && idRs2 === idEx.rd && idRs2 =/= 0.U)
   val isLoadInEx = idEx.valid &&
-    !misalignTrap &&
+    !excTrap &&
     !idEx.signals.illegal &&
     idEx.signals.writebackSel === WritebackSel.MEM &&
     !idEx.signals.memWrite &&
@@ -476,13 +517,16 @@ class Pipeline3(
   val amoWriteData = Mux(isAMO, amoAlu.io.result, idEx.memWriteData)
   l1Cache.io.dCache.writeData := amoWriteData
 
-  val dataWait = dataCacheRequest && !l1Cache.io.dCache.hit
+  // `fault` encerra a espera: a trap de access fault e tomada no lugar.
+  dataFaultTrap := dataCacheRequest && l1Cache.io.dCache.fault
+  val dataWait =
+    dataCacheRequest && !l1Cache.io.dCache.hit && !l1Cache.io.dCache.fault
   cacheWait := fetchWait || dataWait || fenceIWait
   fenceIComplete := fenceIRequest && l1Cache.io.fenceIDone
   val takeRedirect = controlRedirect && !cacheWait && !hazardStall
   stallPipeline := cacheWait || hazardStall
   flushPipeline := takeRedirect || fenceIComplete || takeAnyTrap
-  exCanCommit := !cacheWait && !misalignTrap
+  exCanCommit := !cacheWait && !excTrap
 
   // ============================================================
   // 15. CONEXÃO AO BANCO DE REGISTRADORES (writeback)
@@ -532,6 +576,7 @@ class Pipeline3(
     lwWbValid := false.B
     ifIdValid := false.B
     ifIdIllegal := false.B
+    ifIdFault := false.B
     ifIdInstr := nop
     idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
     dataAccessDone := false.B
@@ -540,6 +585,7 @@ class Pipeline3(
     lwWbValid := false.B
     ifIdValid := false.B
     ifIdIllegal := false.B
+    ifIdFault := false.B
     ifIdInstr := nop
     idEx := 0.U.asTypeOf(new DecodeExecuteBundle)
     dataAccessDone := false.B
@@ -551,6 +597,10 @@ class Pipeline3(
     ifIdValid := fetch.io.valid
     ifIdLength := fetch.io.length
     ifIdIllegal := fetch.io.illegal
+    ifIdFault := fetch.io.fault
+    ifIdFaultAddr := fetch.io.faultAddress
+    ifIdRaw := fetch.io.rawInstr
+    when(fetch.io.fault) { fetchHalted := true.B }
     dataAccessDone := false.B
 
     idEx.valid := ifIdValid
@@ -570,7 +620,13 @@ class Pipeline3(
     idEx.csrAddress := ifIdInstr(31, 20)
     idEx.csrWriteData := csrWriteData
     idEx.csrReadData := csrReadData
+    idEx.fetchFault := ifIdFault
+    idEx.fetchFaultAddr := ifIdFaultAddr
+    idEx.rawInstr := ifIdRaw
   }
+
+  // O flush (trap, desvio ou FENCE.I) reabilita a busca.
+  when(flushPipeline) { fetchHalted := false.B }
 
   // ============================================================
   // 17. SAÍDAS

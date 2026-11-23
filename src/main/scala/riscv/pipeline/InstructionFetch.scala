@@ -29,6 +29,9 @@ class InstructionFetch extends Module {
     // Resposta da memoria: memoryReady indica que memoryData e valido agora.
     val memoryReady = Input(Bool())
     val memoryData = Input(UInt(32.W))
+    // A memoria recusou o pedido (a ICache avisa com `fault`, em nivel). O
+    // pedido e abaixado nesse ciclo para a ICache sair do estado de falha.
+    val memoryFault = Input(Bool())
     // Pedido a memoria: endereco em bytes (alinhado a palavra); nao e o PC.
     val memoryAddress = Output(UInt(32.W))
     val memoryReadEnable = Output(Bool())
@@ -38,6 +41,13 @@ class InstructionFetch extends Module {
     // Tamanho original da instrucao: 2 ou 4 bytes, usado para avancar o PC.
     val length = Output(UInt(3.W))
     val illegal = Output(Bool())
+    // Encoding original, antes da expansao RVC (16 bits, estendido com zeros,
+    // quando comprimida): e o valor de mtval numa instrucao ilegal.
+    val rawInstr = Output(UInt(32.W))
+    // A busca falhou (instruction access fault): valid = 1, instr = NOP e
+    // faultAddress e o endereco que falhou (mtval). Vale em um unico ciclo.
+    val fault = Output(Bool())
+    val faultAddress = Output(UInt(32.W))
     // So consuma instr quando valid estiver true.
     val valid = Output(Bool())
   })
@@ -61,7 +71,12 @@ class InstructionFetch extends Module {
 
   // O pedido NAO depende de flush (evita laco combinacional com o
   // redirecionamento do pipeline): o flush so invalida o buffer.
-  io.memoryReadEnable := io.enable && (!hit || bufferedCross)
+  val wantsWord = io.enable && (!hit || bufferedCross)
+  io.memoryReadEnable := wantsWord && !io.memoryFault
+  io.fault := wantsWord && io.memoryFault
+  // Se a palavra que falhou e a seguinte (instrucao que cruza), o endereco e o
+  // dela; senao, o proprio PC.
+  io.faultAddress := Mux(bufferedCross, alignedPc + 4.U, io.pc)
   io.memoryAddress := Mux(bufferedCross, alignedPc + 4.U, alignedPc)
 
   // Palavra que contem o inicio da instrucao: o buffer, ou a resposta da
@@ -82,16 +97,17 @@ class InstructionFetch extends Module {
   // a primeira palavra precisa estar no buffer e a seguinte chegar agora; se a
   // primeira acabou de chegar (sem buffer), ela e guardada e a busca continua.
   val available = Mux(cross, hit && io.memoryReady, hit || io.memoryReady)
-  io.valid := io.enable && !io.flush && available
-  io.length := Mux(compressed, 2.U, 4.U)
-  io.illegal := io.valid && (io.pc(0) || unsupportedLength ||
+  io.valid := io.enable && !io.flush && (available || io.fault)
+  io.length := Mux(io.fault, 4.U, Mux(compressed, 2.U, 4.U))
+  io.illegal := io.valid && !io.fault && (io.pc(0) || unsupportedLength ||
     (compressed && decompressor.io.illegal))
 
   // Para cruzamento, concatena os 16 bits da palavra seguinte com os 16 atuais.
   // Instrucoes ilegais ou ainda invalidas aparecem como NOP para evitar lixo no decode.
   val fullInstr = Mux(cross, Cat(io.memoryData(15, 0), half), firstWord)
+  io.rawInstr := Mux(compressed, Cat(0.U(16.W), half), fullInstr)
   io.instr := Mux(
-    io.valid && !io.illegal,
+    io.valid && !io.illegal && !io.fault,
     Mux(compressed, decompressor.io.inst_out, fullInstr),
     "h00000013".U
   )

@@ -54,7 +54,9 @@ trait Rv32iBench extends AnyFlatSpec with ChiselScalatestTester {
       expected: Map[Int, BigInt],
       absent: Set[Int] = Set.empty
   ): Unit = {
-    test(new Rv32iBlackBox(program)) { dut =>
+    // Instrucao ilegal (inclusive a palavra 0 depois do programa) gera trap;
+    // o laco `jal x0, 0` impede que o fluxo caia na memoria vazia.
+    test(new Rv32iBlackBox(program :+ Rv32iCode.j(0, 0))) { dut =>
       val writes = ArrayBuffer.empty[(Int, BigInt)]
       val maxCycles = math.max(120, program.size * 12 + 60)
       for (_ <- 0 until maxCycles) {
