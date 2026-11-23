@@ -77,7 +77,8 @@ class Cache(
   val byteOff = addr.offset(1, 0)
 
   // ---------------------------------------------------------------- arrays
-  val arrays = Module(new CacheArrays(cfg))
+  // A ICache e somente leitura: seus arrays nao tem o bit de sujeira.
+  val arrays = Module(new CacheArrays(cfg, hasDirty = !isInstructionCache))
   val flushing = state === sFlushScan || state === sFlushWriteBack
   arrays.io.readIndex := Mux(flushing, flushSet, addr.index)
   arrays.io.invalidateAll := io.invalidateAll

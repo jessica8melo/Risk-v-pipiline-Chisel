@@ -37,12 +37,21 @@ class CacheWritePort(cfg: CacheConfig = CacheConfig.default) extends Bundle {
   *   - valid e dirty: registradores com reset (todas as linhas comecam
   *     invalidas e limpas).
   *
+  * `hasDirty = false` (ICache, somente leitura) NAO cria o armazenamento do bit
+  * de sujeira: o registrador `dirtyBits` nem existe no circuito gerado,
+  * `read(w).dirty` e a constante 0 e `write.dirty` e ignorado. Assim a ausencia
+  * e literal em Chisel, e nao depende de a sintese eliminar um registrador que
+  * nunca vale 1.
+  *
   * Leitura: dado `readIndex`, as `ways` vias do conjunto saem no mesmo ciclo,
   * sem comparacao de tag (isso e a logica de hit/miss, feita fora daqui). Se ha
   * leitura e escrita no mesmo indice no mesmo ciclo, a leitura devolve o valor
   * ANTIGO (a escrita so vale no proximo ciclo).
   */
-class CacheArrays(cfg: CacheConfig = CacheConfig.default) extends Module {
+class CacheArrays(
+    cfg: CacheConfig = CacheConfig.default,
+    hasDirty: Boolean = true
+) extends Module {
   val io = IO(new Bundle {
     val readIndex = Input(UInt(cfg.indexBits.W))
     val read = Output(Vec(cfg.ways, new CacheLineRead(cfg)))
@@ -59,16 +68,25 @@ class CacheArrays(cfg: CacheConfig = CacheConfig.default) extends Module {
   private val validBits = RegInit(
     VecInit(Seq.fill(cfg.ways)(VecInit(Seq.fill(sets)(false.B))))
   )
-  private val dirtyBits = RegInit(
-    VecInit(Seq.fill(cfg.ways)(VecInit(Seq.fill(sets)(false.B))))
-  )
+  // So existe quando a cache pode ser escrita (DCache).
+  private val dirtyBits: Option[Vec[Vec[Bool]]] =
+    if (hasDirty) {
+      val bits = RegInit(
+        VecInit(Seq.fill(cfg.ways)(VecInit(Seq.fill(sets)(false.B))))
+      )
+      bits.suggestName("dirtyBits") // nome fixo (os testes procuram por ele)
+      Some(bits)
+    } else None
 
   for (w <- 0 until cfg.ways) {
     // Leitura combinacional
     io.read(w).tag := tagMem(w).read(io.readIndex)
     io.read(w).data := dataMem(w).read(io.readIndex)
     io.read(w).valid := validBits(w)(io.readIndex)
-    io.read(w).dirty := dirtyBits(w)(io.readIndex)
+    io.read(w).dirty := dirtyBits match {
+      case Some(bits) => bits(w)(io.readIndex)
+      case None       => false.B
+    }
 
     // Escrita sincrona
     when(io.write.en && io.write.way === w.U) {
@@ -76,7 +94,7 @@ class CacheArrays(cfg: CacheConfig = CacheConfig.default) extends Module {
       when(io.write.metaEn) {
         tagMem(w).write(io.write.index, io.write.tag)
         validBits(w)(io.write.index) := io.write.valid
-        dirtyBits(w)(io.write.index) := io.write.dirty
+        dirtyBits.foreach(bits => bits(w)(io.write.index) := io.write.dirty)
       }
     }
   }
@@ -84,7 +102,7 @@ class CacheArrays(cfg: CacheConfig = CacheConfig.default) extends Module {
   when(io.invalidateAll) {
     for (w <- 0 until cfg.ways; set <- 0 until sets) {
       validBits(w)(set) := false.B
-      dirtyBits(w)(set) := false.B
+      dirtyBits.foreach(bits => bits(w)(set) := false.B)
     }
   }
 }
