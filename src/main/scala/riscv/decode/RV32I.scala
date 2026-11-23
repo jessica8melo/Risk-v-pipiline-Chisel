@@ -101,6 +101,20 @@ object RV32I {
     val mcause = 0x342.U(12.W)
     val mtval = 0x343.U(12.W)
     val mip = 0x344.U(12.W)
+    val mcounteren = 0x306.U(12.W) // habilita contadores em S/U
+
+    // ============================================================
+    // CONTADORES (mcycle/minstret e shadows de usuario)
+    // ============================================================
+    // Os contadores hpm 3..12 sao fixos (ver CsrCounters em CSR.scala).
+    val mcycle = 0xb00.U(12.W)
+    val minstret = 0xb02.U(12.W)
+    val mcycleh = 0xb80.U(12.W)
+    val minstreth = 0xb82.U(12.W)
+    val cycle = 0xc00.U(12.W) // somente leitura, espelha mcycle
+    val instret = 0xc02.U(12.W) // somente leitura, espelha minstret
+    val cycleh = 0xc80.U(12.W)
+    val instreth = 0xc82.U(12.W)
 
     // ============================================================
     // S-MODE CSRs (NOVOS)

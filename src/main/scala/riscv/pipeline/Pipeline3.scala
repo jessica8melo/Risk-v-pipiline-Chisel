@@ -6,7 +6,7 @@ import riscv.atomic.{AmoAlu, ReservationUnit}
 import riscv.cache._
 import riscv.decode.{ControlSignals, Controller, ImmGen, RV32I}
 import riscv.execute.ULA
-import riscv.privileged.{CLINT, CSR, InterruptCode}
+import riscv.privileged.{CLINT, CSR, CsrCounters, InterruptCode}
 import riscv.registers.RegisterFile
 
 // ============================================================
@@ -67,6 +67,12 @@ class Pipeline3(
     val illegal = Output(Bool())
     val stalled = Output(Bool())
 
+    // Contadores de desempenho das caches (os mesmos valores aparecem nos
+    // CSRs mhpmcounter3..12 e nos espelhos hpmcounter3..12; ver CsrCounters).
+    val iPerf = Output(new CachePerf)
+    val dPerf = Output(new CachePerf)
+    val perfClear = Input(Bool()) // zera os contadores das caches
+
     // Debug do CLINT
     val debug_clint_trap_assert = Output(Bool())
     val debug_clint_trap_to_smode = Output(Bool())
@@ -99,8 +105,7 @@ class Pipeline3(
       cfg = cacheConfig
     )
   )
-  // Contadores de desempenho da cache: por enquanto nao zerados pelo pipeline.
-  l1Cache.io.perfClear := false.B
+  l1Cache.io.perfClear := io.perfClear
   l1Cache.io.iMem <> mainMemory.io.iMem
   l1Cache.io.dMem <> mainMemory.io.dMem
   val fetch = Module(new InstructionFetch)
@@ -209,15 +214,21 @@ class Pipeline3(
     CSRAddress.mvendorid,
     CSRAddress.marchid,
     CSRAddress.mimpid,
-    CSRAddress.mhartid
-  )
+    CSRAddress.mhartid,
+    CSRAddress.mcounteren
+  ) ++ CsrCounters.addresses.map(_.U(12.W))
   val csrKnown = VecInit(knownCsrs.map(_ === csrAddr)).asUInt.orR
   val csrReadOnly = csrAddr(11, 10) === 3.U
   // RW/RWI (csrOp[1:0] = 01) sempre escrevem; RS/RC so se rs1/zimm != 0.
   val csrWrites = idEx.signals.csrOp(1, 0) === 1.U || idEx.rs1 =/= 0.U
   val csrOpValid = idEx.valid && !idEx.signals.illegal && idEx.signals.csrWrite
+  // Espelhos de contador (0xC00..0xCFF): em S/U so com o bit de mcounteren.
+  val csrUserCounter = csrAddr(11, 8) === 0xc.U
+  val csrCounterDenied = priv =/= 3.U && csrUserCounter &&
+    !csr.io.mcounteren_read(csrAddr(4, 0))
   val csrPrivIllegal = csrOpValid &&
-    (!csrKnown || priv < csrAddr(9, 8) || (csrReadOnly && csrWrites))
+    (!csrKnown || priv < csrAddr(9, 8) || (csrReadOnly && csrWrites) ||
+      csrCounterDenied)
   val xretValid = idEx.valid && !idEx.signals.illegal
   val mretPrivIllegal = xretValid && idEx.instr === MRET && priv =/= 3.U
   val sretPrivIllegal = xretValid && idEx.instr === SRET &&
@@ -536,6 +547,14 @@ class Pipeline3(
     is(6.U) { csrWriteData := csrReadData | csrSrc }
     is(7.U) { csrWriteData := csrReadData & ~csrSrc }
   }
+
+  // minstret: uma instrucao conclui no EX quando nao ha espera de cache nem
+  // excecao. ECALL/EBREAK causam excecao e nao contam (MRET/SRET contam).
+  csr.io.retire := idEx.valid && exCanCommit && !exIsEcallEbreak
+  csr.io.iPerf := l1Cache.io.iPerf
+  csr.io.dPerf := l1Cache.io.dPerf
+  io.iPerf := l1Cache.io.iPerf
+  io.dPerf := l1Cache.io.dPerf
 
   csr.io.cpu_write_enable := idEx.valid && !exIllegal && exCanCommit &&
     idEx.signals.csrWrite &&

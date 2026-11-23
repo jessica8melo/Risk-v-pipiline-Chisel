@@ -2,7 +2,45 @@ package riscv.privileged
 
 import chisel3._
 import chisel3.util._
+import riscv.cache.CachePerf
 import riscv.decode.RV32I
+
+/** Contadores de desempenho visiveis como CSRs.
+  *
+  * Cada contador de 64 bits aparece em 4 enderecos de 32 bits: `mXXX` (0xB00 +
+  * n, M), `mXXXh` (0xB80 + n, M), `XXX` (0xC00 + n, leitura em S/U se
+  * `mcounteren[n]`) e `XXXh` (0xC80 + n).
+  *
+  * n = 0 mcycle, n = 2 minstret, n = 3..12 contadores fixos das caches
+  * (mhpmcounterN), n = 1 (time) nao existe:
+  *
+  * {{{
+  *  3 ICache hits         4 ICache misses        5 ICache miss cycles
+  *  6 DCache hits         7 DCache misses        8 DCache miss cycles
+  *  9 DCache write-backs 10 DCache flush WBs    11 ICache faults
+  * 12 DCache faults
+  * }}}
+  */
+object CsrCounters {
+  val hpmNames: Seq[String] = Seq(
+    "icache.hits",
+    "icache.misses",
+    "icache.missCycles",
+    "dcache.hits",
+    "dcache.misses",
+    "dcache.missCycles",
+    "dcache.writeBacks",
+    "dcache.flushWriteBacks",
+    "icache.faults",
+    "dcache.faults"
+  )
+  val firstHpm = 3
+  val numbers: Seq[Int] = Seq(0, 2) ++ (firstHpm until firstHpm + hpmNames.size)
+
+  /** Todos os enderecos de CSR de contador (M e usuario, baixo e alto). */
+  val addresses: Seq[Int] =
+    numbers.flatMap(n => Seq(0xb00 + n, 0xb80 + n, 0xc00 + n, 0xc80 + n))
+}
 
 class CSR extends Module {
   val io = IO(new Bundle {
@@ -56,6 +94,15 @@ class CSR extends Module {
     // MODO DE PRIVILÉGIO
     // ============================================================
     val current_priv = Output(UInt(2.W))
+
+    // ============================================================
+    // CONTADORES DE DESEMPENHO
+    // ============================================================
+    // Pulso: uma instrucao do EX conclui neste ciclo (minstret).
+    val retire = Input(Bool())
+    val iPerf = Input(new CachePerf)
+    val dPerf = Input(new CachePerf)
+    val mcounteren_read = Output(UInt(32.W))
   })
 
   import RV32I._
@@ -88,6 +135,46 @@ class CSR extends Module {
   val current_priv = RegInit(3.U(2.W)) // Começa em M-mode
   io.current_priv := current_priv
 
+  // Contadores de 64 bits. mcycle conta todo ciclo; minstret conta cada
+  // instrucao concluida. A escrita por CSR tem prioridade sobre a contagem.
+  val mcounteren = RegInit(0.U(32.W))
+  val mcycle = RegInit(0.U(64.W))
+  val minstret = RegInit(0.U(64.W))
+  mcycle := mcycle + 1.U
+  minstret := minstret + io.retire.asUInt
+  io.mcounteren_read := mcounteren
+
+  // Valores lidos. Como o CSR e lido no ID, a instrucao que esta no EX e
+  // conclui neste ciclo ainda nao entrou em minstret: soma-se `retire` para
+  // que o valor lido conte todas as instrucoes anteriores.
+  val instretRead = minstret + io.retire.asUInt
+  private val hpmValues: Seq[UInt] = Seq(
+    io.iPerf.hits,
+    io.iPerf.misses,
+    io.iPerf.missCycles,
+    io.dPerf.hits,
+    io.dPerf.misses,
+    io.dPerf.missCycles,
+    io.dPerf.writeBacks,
+    io.dPerf.flushWriteBacks,
+    io.iPerf.faults,
+    io.dPerf.faults
+  )
+  private val counterValues: Seq[(Int, UInt)] =
+    Seq(0 -> mcycle, 2 -> instretRead) ++
+      hpmValues.zipWithIndex.map { case (v, k) =>
+        (CsrCounters.firstHpm + k) -> v
+      }
+  private val counterReads: Seq[(UInt, UInt)] = counterValues.flatMap {
+    case (n, v) =>
+      Seq(
+        (0xb00 + n).U(12.W) -> v(31, 0),
+        (0xb80 + n).U(12.W) -> v(63, 32),
+        (0xc00 + n).U(12.W) -> v(31, 0),
+        (0xc80 + n).U(12.W) -> v(63, 32)
+      )
+  }
+
   // ============================================================
   // LEITURA (MuxLookup)
   // ============================================================
@@ -116,8 +203,9 @@ class CSR extends Module {
       CSRAddress.mvendorid -> 0.U(32.W),
       CSRAddress.marchid -> 0.U(32.W),
       CSRAddress.mimpid -> 0.U(32.W),
-      CSRAddress.mhartid -> 0.U(32.W)
-    )
+      CSRAddress.mhartid -> 0.U(32.W),
+      CSRAddress.mcounteren -> mcounteren
+    ) ++ counterReads
   )
 
   // ============================================================
@@ -181,6 +269,17 @@ class CSR extends Module {
       is(CSRAddress.scause) { scause := io.cpu_write_data }
       is(CSRAddress.stval) { stval := io.cpu_write_data }
       is(CSRAddress.satp) { satp := io.cpu_write_data }
+      is(CSRAddress.mcounteren) { mcounteren := io.cpu_write_data }
+      // mcycle/minstret sao graváveis (metades baixa e alta separadas).
+      // Os contadores hpm das caches sao somente leitura: escrita ignorada.
+      is(CSRAddress.mcycle) { mcycle := Cat(mcycle(63, 32), io.cpu_write_data) }
+      is(CSRAddress.mcycleh) { mcycle := Cat(io.cpu_write_data, mcycle(31, 0)) }
+      is(CSRAddress.minstret) {
+        minstret := Cat(minstret(63, 32), io.cpu_write_data)
+      }
+      is(CSRAddress.minstreth) {
+        minstret := Cat(io.cpu_write_data, minstret(31, 0))
+      }
     }
   }
 }

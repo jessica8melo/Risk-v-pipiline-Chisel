@@ -37,7 +37,7 @@ Testes (ScalaTest + chiseltest) em `src/test/scala/riscv/`:
 
 - `unit/`: blocos isolados, em subpastas que espelham os pacotes acima (`decode/`, `execute/`, `registers/`, `privileged/`, `compressed/`, `atomic/`).
 - `cache/`: arrays, LRU, FSM, caminho de acerto, latencia da memoria, canal de falha (`CacheFaultTest`), contadores (`CachePerfTest`), memoria principal e a varredura de geometria/politica (`CacheGeometryTest`).
-- `integration/`: pipeline completo. `pipeline/` (`Pipeline3MisalignedSpec`: traps de acesso desalinhado; `Pipeline3SlowMemorySpec`: memoria lenta), `blackbox/rv32i/` (programas RV32I), `diagnostics/` (`Rv32iHexTraceSpec`, ver a secao de programas em hex) e `support/` (helpers compartilhados).
+- `integration/`: pipeline completo. `pipeline/` (`Pipeline3MisalignedSpec`: traps de acesso desalinhado; `Pipeline3SlowMemorySpec`: memoria lenta; `Pipeline3CounterSpec`: `mcycle`/`minstret` e contadores das caches nos CSRs), `blackbox/rv32i/` (programas RV32I), `diagnostics/` (`Rv32iHexTraceSpec`, ver a secao de programas em hex) e `support/` (helpers compartilhados).
 
 Outros arquivos: `build.sbt` (dependencias e configuracoes do build) e `.github/workflows/ci.yml` (CI).
 
@@ -227,6 +227,7 @@ A checagem acontece no EX, com o privilegio vigente, e uma violacao e **instruca
 | Situacao | Ilegal quando |
 |---|---|
 | Acesso a CSR | o CSR nao existe, ou o privilegio atual e menor que `csr[9:8]` (U < S < M) |
+| Leitura de `cycle`/`instret`/`hpmcounterN` (0xC00..) em S ou U | o bit `N` de `mcounteren` esta em 0 |
 | Escrita em CSR | o CSR e somente leitura (`csr[11:10] = 11`); `CSRRS`/`CSRRC` com `rs1 = 0` (ou `zimm = 0`) so leem e sao permitidos |
 | `MRET` | privilegio diferente de M |
 | `SRET` | em U, ou em S com `mstatus.TSR = 1` |
@@ -243,13 +244,34 @@ Limites: `misa`, `mip` e `sip` existem e leem zero (escritas ignoradas); `sstatu
 - **Coerencia:** ICache e DCache so se sincronizam por `FENCE.I` (grava as linhas dirty da DCache e invalida a ICache), como manda a especificacao.
 - **Memoria principal** (`CacheMainMemory`): `latency = 0` responde no mesmo ciclo; com `latency >= 1` atende uma transacao por vez, com prioridade da DCache em caso de empate. O tamanho padrao do `Pipeline3` (`memoryWords = 1024`, 4 KiB) e menor que as caches; para experimentos de cache use uma memoria bem maior.
 - **Canal de falha:** um pedido fora da capacidade (ou desalinhado) e recusado pela memoria com `fault` no lugar de `ready` (a leitura devolve zero e nada e escrito). A `Cache` vai ao estado `sFault` e levanta `io.cpu.fault` ate a CPU derrubar o pedido; os arrays nao mudam. A convencao prevista e: ICache = instruction access fault (`mcause 1`); DCache = load (`5`) ou store/AMO (`7`) access fault, com `mtval = address`. O `L1Cache` tambem expoe `fenceIFault` quando um write-back do `FENCE.I` e recusado. O `Pipeline3` converte esses sinais em trap (ver "Access faults e instrucao ilegal").
-- **Contadores de desempenho** (`CachePerf`, 64 bits, em `L1Cache.io.iPerf` e `io.dPerf`; `io.perfClear` zera os das duas caches): `hits`, `misses` (um miss seguido de refill conta 1, e o hit que atende o pedido depois do refill nao entra em `hits`), `writeBacks` (despejo de linha suja), `flushWriteBacks` (flush do `FENCE.I`), `faults` e `missCycles` (penalidade de miss acumulada). Eles ainda nao sao expostos no `Pipeline3` nem em CSRs.
+- **Contadores de desempenho** (`CachePerf`, 64 bits, em `L1Cache.io.iPerf` e `io.dPerf`; `io.perfClear` zera os das duas caches): `hits`, `misses` (um miss seguido de refill conta 1, e o hit que atende o pedido depois do refill nao entra em `hits`), `writeBacks` (despejo de linha suja), `flushWriteBacks` (flush do `FENCE.I`), `faults` e `missCycles` (penalidade de miss acumulada).
+
+  O `Pipeline3` expoe os dois conjuntos em `io.iPerf` e `io.dPerf` (e tem `io.perfClear`), e os mesmos valores aparecem como CSRs (ver "Contadores como CSRs").
+
+## Contadores como CSRs
+
+`mcycle` e `minstret` (64 bits, em duas metades) e 10 contadores das caches (`mhpmcounter3..12`, os `CachePerf`) sao CSRs. Cada contador de 64 bits aparece em 4 enderecos de 32 bits: `0xB00 + n` (baixa, M), `0xB80 + n` (alta, M), `0xC00 + n` e `0xC80 + n` (espelhos somente leitura, legiveis em S/U conforme `mcounteren`).
+
+| n | Contador | n | Contador |
+|---|---|---|---|
+| 0 | `mcycle` (todo ciclo) | 7 | DCache misses |
+| 2 | `minstret` (instrucoes concluidas) | 8 | DCache miss cycles |
+| 3 | ICache hits | 9 | DCache write-backs |
+| 4 | ICache misses | 10 | DCache flush write-backs |
+| 5 | ICache miss cycles | 11 | ICache faults |
+| 6 | DCache hits | 12 | DCache faults |
+
+- `minstret` conta cada instrucao uma unica vez, quando ela conclui no EX: esperas por miss de cache nao contam instrucoes a mais, e `ECALL`/`EBREAK` (que geram excecao) nao contam. A leitura soma a instrucao que conclui no mesmo ciclo, entao o valor lido e o de todas as instrucoes anteriores.
+- `mcycle` e `minstret` sao graveis (metades baixa e alta). Os contadores das caches sao somente leitura (escrita ignorada); eles so voltam a zero por `io.perfClear` do `Pipeline3`.
+- `mcounteren` (0x306) e leitura/escrita. Nao ha `mcountinhibit`, `time` nem `scounteren`.
+- Os contadores das caches sao registrados no fim do ciclo do evento: uma leitura imediatamente apos o acesso que o gerou ainda nao o inclui (deixe 1 ou 2 instrucoes de folga).
+- Teste: `Pipeline3CounterSpec`.
 
 ## Pendencias conhecidas
 
 - `DIV`, `DIVU`, `REM` e `REMU` (extensao M so tem multiplicacao).
 - Interrupcoes: o timer esta desligado (sem `mtime`/`mtimecmp`) e nao ha `WFI` nem interrupcao externa.
-- Contadores `mcycle`/`minstret` e a exposicao dos contadores da cache no `Pipeline3`.
+- `mcountinhibit`, `mtime`/`time` e `scounteren` (os contadores sempre contam; o acesso de S/U depende so de `mcounteren`).
 - MMIO e regiao nao-cacheable (todo acesso passa pela cache).
 - MMU: ha o CSR `satp`, mas nao ha traducao de enderecos nem `SFENCE.VMA`.
 
