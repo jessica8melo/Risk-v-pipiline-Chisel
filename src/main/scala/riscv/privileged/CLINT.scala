@@ -54,6 +54,9 @@ class CLINTInterface extends Bundle {
   // SAÍDAS: ESCRITA NOS CSRs
   // M-Mode
   val mstatus_write_data = Output(UInt(32.W))
+  // Privilegio vigente depois de uma escrita do CLINT (trap: M ou S; MRET: MPP;
+  // SRET: SPP). Sem escrita do CLINT, repete o privilegio atual.
+  val priv_write = Output(UInt(2.W))
   val mepc_write_data = Output(UInt(32.W))
   val mcause_write_data = Output(UInt(32.W))
   val mtval_write_data = Output(UInt(32.W))
@@ -103,6 +106,7 @@ class CLINT extends Module {
   io.trap_address := io.mtvec
   io.trap_cause := 0.U
   io.trap_to_smode := false.B
+  io.priv_write := io.current_priv
 
   // 1. ESTADO ATUAL
   val current_priv = io.current_priv
@@ -183,6 +187,7 @@ class CLINT extends Module {
     when(delegate_to_smode) {
       // Trap para S-Mode
       trap_address_internal := io.stvec
+      io.priv_write := 1.U(2.W)
 
       io.sstatus_write_data := Cat(
         io.sstatus(31, 9),
@@ -206,6 +211,7 @@ class CLINT extends Module {
     }.otherwise {
       // Trap para M-Mode
       trap_address_internal := io.mtvec
+      io.priv_write := 3.U(2.W)
 
       io.mstatus_write_data := Cat(
         io.mstatus(31, 13),
@@ -243,6 +249,7 @@ class CLINT extends Module {
     when(delegate_to_smode) {
       // Exceção para S-Mode
       trap_address_internal := io.stvec
+      io.priv_write := 1.U(2.W)
 
       io.sstatus_write_data := Cat(
         io.sstatus(31, 9),
@@ -265,6 +272,7 @@ class CLINT extends Module {
     }.otherwise {
       // Exceção para M-Mode
       trap_address_internal := io.mtvec
+      io.priv_write := 3.U(2.W)
 
       io.mstatus_write_data := Cat(
         io.mstatus(31, 13),
@@ -298,6 +306,7 @@ class CLINT extends Module {
     trap_address_internal := io.mepc
 
     val mpp = io.mstatus(12, 11)
+    io.priv_write := mpp // MRET volta ao privilegio salvo em MPP
 
     io.mstatus_write_data := Cat(
       io.mstatus(31, 13),
@@ -326,6 +335,7 @@ class CLINT extends Module {
     trap_address_internal := io.sepc
 
     val spp = io.sstatus(8)
+    io.priv_write := Mux(spp === 1.U, 1.U(2.W), 0.U(2.W)) // SPP: S ou U
 
     io.sstatus_write_data := Cat(
       io.sstatus(31, 9),

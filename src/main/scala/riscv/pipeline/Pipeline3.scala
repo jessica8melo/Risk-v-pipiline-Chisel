@@ -174,6 +174,58 @@ class Pipeline3(
   clint.io.current_priv := csr.io.current_priv
 
   // ============================================================
+  // 5b. CHECAGEM DE PRIVILEGIO (no EX, com o privilegio vigente)
+  // ============================================================
+  // Sao ilegais (mcause 2, mtval = encoding):
+  //   - CSR inexistente, ou de nivel mais alto que o privilegio atual
+  //     (csr[9:8] = menor privilegio que acessa);
+  //   - escrita em CSR somente leitura (csr[11:10] = 11); CSRRS/CSRRC com rs1 = 0
+  //     (ou zimm = 0) so leem e sao permitidos;
+  //   - MRET fora de M; SRET em U, ou em S com mstatus.TSR = 1.
+  val priv = csr.io.current_priv
+  val csrAddr = idEx.csrAddress
+  // CSRs implementados; misa, mip e sip existem e leem zero (escrita ignorada).
+  val knownCsrs = Seq(
+    CSRAddress.mstatus,
+    CSRAddress.misa,
+    CSRAddress.medeleg,
+    CSRAddress.mideleg,
+    CSRAddress.mie,
+    CSRAddress.mtvec,
+    CSRAddress.mscratch,
+    CSRAddress.mepc,
+    CSRAddress.mcause,
+    CSRAddress.mtval,
+    CSRAddress.mip,
+    CSRAddress.sstatus,
+    CSRAddress.sie,
+    CSRAddress.stvec,
+    CSRAddress.sscratch,
+    CSRAddress.sepc,
+    CSRAddress.scause,
+    CSRAddress.stval,
+    CSRAddress.sip,
+    CSRAddress.satp,
+    CSRAddress.mvendorid,
+    CSRAddress.marchid,
+    CSRAddress.mimpid,
+    CSRAddress.mhartid
+  )
+  val csrKnown = VecInit(knownCsrs.map(_ === csrAddr)).asUInt.orR
+  val csrReadOnly = csrAddr(11, 10) === 3.U
+  // RW/RWI (csrOp[1:0] = 01) sempre escrevem; RS/RC so se rs1/zimm != 0.
+  val csrWrites = idEx.signals.csrOp(1, 0) === 1.U || idEx.rs1 =/= 0.U
+  val csrOpValid = idEx.valid && !idEx.signals.illegal && idEx.signals.csrWrite
+  val csrPrivIllegal = csrOpValid &&
+    (!csrKnown || priv < csrAddr(9, 8) || (csrReadOnly && csrWrites))
+  val xretValid = idEx.valid && !idEx.signals.illegal
+  val mretPrivIllegal = xretValid && idEx.instr === MRET && priv =/= 3.U
+  val sretPrivIllegal = xretValid && idEx.instr === SRET &&
+    (priv === 0.U || (priv === 1.U && csr.io.mstatus_read(22)))
+  val exIllegal =
+    idEx.signals.illegal || csrPrivIllegal || mretPrivIllegal || sretPrivIllegal
+
+  // ============================================================
   // 5. INTERRUPÇÕES (sem fonte ligada)
   // ============================================================
   // Nao ha fonte de interrupcao externa/timer ligada ainda: o CLINT recebe
@@ -184,7 +236,7 @@ class Pipeline3(
   // ECALL/EBREAK/MRET/SRET sao resolvidos no EX (ver secao 9c): o CLINT
   // recebe PC e instrucao do EX e `valid` fica alto por UM unico ciclo, o
   // ciclo em que a trap/retorno e tomado (ele dispara a escrita nos CSRs).
-  val sysInstrInEx = idEx.valid && !idEx.signals.illegal
+  val sysInstrInEx = idEx.valid && !exIllegal
   val exIsEcallEbreak =
     sysInstrInEx && (idEx.instr === ECALL || idEx.instr === EBREAK)
   val exIsXret = sysInstrInEx && (idEx.instr === MRET || idEx.instr === SRET)
@@ -199,6 +251,7 @@ class Pipeline3(
   // ============================================================
   csr.io.clint_write_enable := clint.io.direct_write_enable
   csr.io.clint_mstatus_write := clint.io.mstatus_write_data
+  csr.io.clint_priv_write := clint.io.priv_write
   csr.io.clint_mepc_write := clint.io.mepc_write_data
   csr.io.clint_mcause_write := clint.io.mcause_write_data
   csr.io.clint_mtval_write := clint.io.mtval_write_data
@@ -211,7 +264,7 @@ class Pipeline3(
   // 7. ESTÁGIO IF: busca de instrução pela ICache
   // ============================================================
   val fenceIRequest =
-    idEx.valid && !idEx.signals.illegal && idEx.signals.isFenceI
+    idEx.valid && !exIllegal && idEx.signals.isFenceI
   l1Cache.io.fenceI := fenceIRequest
 
   // O InstructionFetch decide qual palavra de 32 bits pedir a ICache (buffer de
@@ -288,7 +341,7 @@ class Pipeline3(
     is(BranchType.BGEU) { branchTaken := idEx.rs1Value >= idEx.rs2Value }
   }
 
-  val controlRedirect = idEx.valid && !idEx.signals.illegal &&
+  val controlRedirect = idEx.valid && !exIllegal &&
     (idEx.signals.jump || (idEx.signals.branchType =/= BranchType.NONE && branchTaken))
   val redirectTarget = Mux(idEx.signals.jalr, jalrTarget, pcRelativeTarget)
 
@@ -302,12 +355,12 @@ class Pipeline3(
   //   - mtval = endereco efetivo que falhou; mepc = PC da instrucao.
   // LR/SC/AMO sao sempre de palavra (exigem alinhamento natural de 4 bytes);
   // SC desalinhado gera trap mesmo sem reserva (a checagem vem antes).
-  val exIsLR = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
-  val exIsSC = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
-  val exIsAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
+  val exIsLR = idEx.valid && !exIllegal && idEx.signals.isLR
+  val exIsSC = idEx.valid && !exIllegal && idEx.signals.isSC
+  val exIsAMO = idEx.valid && !exIllegal && idEx.signals.isAMO
   val exIsAtomic = exIsLR || exIsSC || exIsAMO
   val exIsStore = exIsSC || exIsAMO || (idEx.signals.memWrite && !exIsAtomic)
-  val exMemAccess = idEx.valid && !idEx.signals.illegal &&
+  val exMemAccess = idEx.valid && !exIllegal &&
     (idEx.signals.memWrite || idEx.signals.writebackSel === WritebackSel.MEM || exIsAtomic)
 
   val exAccessSize = Mux(exIsAtomic, MemorySize.WORD, idEx.signals.memSize)
@@ -327,7 +380,7 @@ class Pipeline3(
   //   - load/store access fault (mcause 5/7): a DCache sinalizou `fault`
   //     (ligado na secao 14), mtval = endereco efetivo.
   val fetchFaultTrap = idEx.valid && idEx.fetchFault
-  val illegalTrap = idEx.valid && idEx.signals.illegal
+  val illegalTrap = idEx.valid && exIllegal
   val dataFaultTrap = WireDefault(false.B)
   val excTrap = fetchFaultTrap || illegalTrap || misalignTrap || dataFaultTrap
   // Como o redirecionamento de desvios, a trap so e tomada quando nao ha
@@ -381,7 +434,7 @@ class Pipeline3(
     (usesRs2 && idRs2 === idEx.rd && idRs2 =/= 0.U)
   val isLoadInEx = idEx.valid &&
     !excTrap &&
-    !idEx.signals.illegal &&
+    !exIllegal &&
     idEx.signals.writebackSel === WritebackSel.MEM &&
     !idEx.signals.memWrite &&
     idEx.signals.regWrite &&
@@ -396,9 +449,9 @@ class Pipeline3(
   // ============================================================
   // 11. EXTENSÃO A: LR/SC e AMOs
   // ============================================================
-  val isLR = idEx.valid && !idEx.signals.illegal && idEx.signals.isLR
-  val isSC = idEx.valid && !idEx.signals.illegal && idEx.signals.isSC
-  val isAMO = idEx.valid && !idEx.signals.illegal && idEx.signals.isAMO
+  val isLR = idEx.valid && !exIllegal && idEx.signals.isLR
+  val isSC = idEx.valid && !exIllegal && idEx.signals.isSC
+  val isAMO = idEx.valid && !exIllegal && idEx.signals.isAMO
   val scHasReservation = reservation.io.hasReservation
 
   // Eventos de reserva (ver ReservationUnit para a prioridade entre eles):
@@ -417,7 +470,7 @@ class Pipeline3(
   // O SC consome a reserva no commit (`scCommit`).
   reservation.io.storeHit :=
     l1Cache.io.dCache.hit && idEx.signals.memWrite && !idEx.signals.isSC
-  reservation.io.invalidate := io.illegal || idEx.signals.illegal
+  reservation.io.invalidate := io.illegal || exIllegal
 
   val scSuccess = isSC && exCanCommit && scHasReservation
 
@@ -439,13 +492,13 @@ class Pipeline3(
 
   // 12b. Writeback enable/rd
   val writebackEnable =
-    (idEx.valid && !idEx.signals.illegal && idEx.signals.regWrite && exCanCommit &&
+    (idEx.valid && !exIllegal && idEx.signals.regWrite && exCanCommit &&
       !hazardStall) || lwWbValid
   val writebackRd = Mux(lwWbValid, lwWbRd, idEx.rd)
 
   // 12c. CSR forwarding
   val csrAddressEX = idEx.csrAddress
-  val csrForwarding = idEx.valid && !idEx.signals.illegal &&
+  val csrForwarding = idEx.valid && !exIllegal &&
     idEx.signals.csrWrite &&
     (csrAddressID === csrAddressEX)
   val csrReadData = Mux(csrForwarding, idEx.csrWriteData, csr.io.read_data)
@@ -484,7 +537,7 @@ class Pipeline3(
     is(7.U) { csrWriteData := csrReadData & ~csrSrc }
   }
 
-  csr.io.cpu_write_enable := idEx.valid && !idEx.signals.illegal && exCanCommit &&
+  csr.io.cpu_write_enable := idEx.valid && !exIllegal && exCanCommit &&
     idEx.signals.csrWrite &&
     !clint.io.direct_write_enable
   csr.io.cpu_write_address := idEx.csrAddress
@@ -493,7 +546,7 @@ class Pipeline3(
   // ============================================================
   // 14. ACESSO À DCache E HANDSHAKE DAS CACHES
   // ============================================================
-  val dataAccess = idEx.valid && !idEx.signals.illegal &&
+  val dataAccess = idEx.valid && !exIllegal &&
     (idEx.signals.memWrite || idEx.signals.writebackSel === WritebackSel.MEM) &&
     (!isSC || scHasReservation) &&
     !misalignTrap
@@ -637,7 +690,7 @@ class Pipeline3(
   io.writebackData := writebackData
   io.writebackRd := writebackRd
   io.writebackEnable := writebackEnable
-  io.illegal := idEx.valid && idEx.signals.illegal
+  io.illegal := idEx.valid && exIllegal
   io.stalled := stallPipeline
 
   // Debug do CLINT

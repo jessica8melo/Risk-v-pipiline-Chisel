@@ -215,6 +215,24 @@ Tres excecoes sincronas sao tomadas no estagio EX, com `mepc` = PC da instrucao 
 - **Instrucao ilegal:** inclui opcode invalido, RVC ilegal, `pc[0]` impar e a palavra `0x00000000`. **Programas de teste precisam terminar em um laco** (`jal x0, 0`), porque cair na memoria vazia agora gera trap (com `mtvec = 0`, o programa reinicia).
 - Prioridade quando mais de uma vale: busca (1), ilegal (2), desalinhado (4/6), dados (5/7); na pratica sao exclusivas.
 
+### Privilegio
+
+O processador comeca em M-mode. O CLINT calcula o privilegio seguinte (`priv_write`) e o CSR o grava junto com o resto da trap:
+
+- trap (excecao ou interrupcao): vai a **M**, ou a **S** quando delegada por `medeleg`/`mideleg`; `mstatus.MPP` (ou `SPP`) guarda o privilegio anterior;
+- `MRET` volta ao privilegio salvo em `MPP`; `SRET`, ao salvo em `SPP` (S ou U).
+
+A checagem acontece no EX, com o privilegio vigente, e uma violacao e **instrucao ilegal** (`mcause 2`, `mtval` = encoding):
+
+| Situacao | Ilegal quando |
+|---|---|
+| Acesso a CSR | o CSR nao existe, ou o privilegio atual e menor que `csr[9:8]` (U < S < M) |
+| Escrita em CSR | o CSR e somente leitura (`csr[11:10] = 11`); `CSRRS`/`CSRRC` com `rs1 = 0` (ou `zimm = 0`) so leem e sao permitidos |
+| `MRET` | privilegio diferente de M |
+| `SRET` | em U, ou em S com `mstatus.TSR = 1` |
+
+Limites: `misa`, `mip` e `sip` existem e leem zero (escritas ignoradas); `sstatus` e um registrador separado de `mstatus` (nao um recorte dele); nao ha `TVM`, `TW`, `MPRV`, PMP nem MMU, entao loads e stores em U/S nao sao restringidos.
+
 ## Sistema de cache
 
 - **Geometria padrao:** L1 dividida em ICache e DCache, 8 KiB cada, 4 vias, linha de 16 B (4 palavras), reposicao LRU, write-back com write-allocate, controlador bloqueante. A premissa e que os 16 KiB do enunciado sao a soma das duas.

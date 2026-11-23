@@ -43,6 +43,7 @@ class CSR extends Module {
     // ============================================================
     val clint_write_enable = Input(Bool())
     val clint_mstatus_write = Input(UInt(32.W))
+    val clint_priv_write = Input(UInt(2.W)) // novo privilegio
     val clint_mepc_write = Input(UInt(32.W))
     val clint_mcause_write = Input(UInt(32.W))
     val clint_mtval_write = Input(UInt(32.W)) // NOVO
@@ -155,8 +156,8 @@ class CSR extends Module {
     scause := io.clint_scause_write
     stval := io.clint_stval_write
 
-    // Atualiza o modo de privilégio baseado no MPP
-    current_priv := io.clint_mstatus_write(12, 11)
+    // Novo privilégio calculado pelo CLINT (trap: M/S; MRET: MPP; SRET: SPP)
+    current_priv := io.clint_priv_write
 
   }.elsewhen(io.cpu_write_enable) {
     switch(io.cpu_write_address) {
