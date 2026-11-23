@@ -556,8 +556,12 @@ class Pipeline3(
   io.iPerf := l1Cache.io.iPerf
   io.dPerf := l1Cache.io.dPerf
 
+  // CSRRS/CSRRC (e as formas com imediato) com rs1/zimm = 0 nao escrevem no CSR
+  // (especificacao RISC-V; `csrWrites` ja distingue isso). Reescrever o valor lido
+  // seria um erro: ele foi lido no ID, um ciclo antes, e a escrita tem prioridade
+  // sobre a contagem de mcycle/minstret, que perderiam a propria instrucao.
   csr.io.cpu_write_enable := idEx.valid && !exIllegal && exCanCommit &&
-    idEx.signals.csrWrite &&
+    idEx.signals.csrWrite && csrWrites &&
     !clint.io.direct_write_enable
   csr.io.cpu_write_address := idEx.csrAddress
   csr.io.cpu_write_data := idEx.csrWriteData

@@ -83,10 +83,10 @@ class CacheArrays(
     io.read(w).tag := tagMem(w).read(io.readIndex)
     io.read(w).data := dataMem(w).read(io.readIndex)
     io.read(w).valid := validBits(w)(io.readIndex)
-    io.read(w).dirty := dirtyBits match {
-      case Some(bits) => bits(w)(io.readIndex)
-      case None       => false.B
-    }
+    // map/getOrElse em vez de `:= x match {...}`: `match` tem precedencia menor
+    // que `:=` e sem parenteses isso e lido como `(a := x) match {...}`.
+    io.read(w)
+      .dirty := dirtyBits.map(bits => bits(w)(io.readIndex)).getOrElse(false.B)
 
     // Escrita sincrona
     when(io.write.en && io.write.way === w.U) {
