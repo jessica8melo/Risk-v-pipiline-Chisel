@@ -19,10 +19,12 @@ import scala.io.Source
   * para `<dirSaida>/program_padded.hex` completando com zeros ate `memoryWords`
   * linhas: sem isso o `$readmemh` deixa o restante da memoria indefinido (X) na
   * simulacao e avisa "Not enough words in the file". O caminho gravado no
-  * Verilog e absoluto, entao e preciso gerar de novo se o projeto mudar de lugar.
+  * Verilog e absoluto, entao e preciso gerar de novo se o projeto mudar de
+  * lugar.
   *
-  * Saidas em `<dirSaida>`: `Pipeline3.v`, `Pipeline3.fir`, `Pipeline3.anno.json`
-  * e `program_padded.hex`. O testbench fica em `modelsim/tb_pipeline3.v`.
+  * Saidas em `<dirSaida>`: `Pipeline3.v`, `Pipeline3.fir`,
+  * `Pipeline3.anno.json` e `program_padded.hex`. O testbench fica em
+  * `modelsim/tb_pipeline3.v`.
   */
 object GeneratePipeline3Verilog extends App {
   val programArg = args.headOption.getOrElse(
@@ -34,7 +36,12 @@ object GeneratePipeline3Verilog extends App {
 
   val source = Source.fromFile(programArg, "UTF-8")
   val words =
-    try source.getLines().map(_.takeWhile(_ != '#').trim).filter(_.nonEmpty).toList
+    try
+      source
+        .getLines()
+        .map(_.takeWhile(_ != '#').trim)
+        .filter(_.nonEmpty)
+        .toList
     finally source.close()
 
   words.zipWithIndex.foreach { case (word, index) =>
