@@ -85,11 +85,12 @@ class RefCache(cfg: CacheConfig) {
   *   - tamanho de linha: 8, 16, 32, 64 B
   *   - politica: LRU, FIFO, aleatoria
   *
-  * Cada configuracao roda o mesmo tipo de trace (leituras e escritas com
-  * footprint maior que a cache), confere o dado devolvido contra um modelo de
-  * memoria, e, para LRU e FIFO, os contadores (hits, misses, write-backs)
-  * contra um modelo de referencia. A taxa de acerto de cada configuracao vai
-  * para `target/cache-sweep.csv`.
+  * Todas as configuracoes rodam o MESMO trace (`CacheSweepTrace`: enderecos de
+  * byte fixos, semente fixa, independentes da geometria), confere o dado
+  * devolvido contra um modelo de memoria, e, para LRU e FIFO, os contadores
+  * (hits, misses, write-backs) contra um modelo de referencia. Os resultados de
+  * cada configuracao vao para `target/cache-sweep.csv`, com a linha de base
+  * presente em todos os eixos.
   */
 class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "CacheConfig"
@@ -115,32 +116,16 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
 
   behavior of "Cache parametrizada (varredura)"
 
-  private val base = CacheConfig()
-  private val sweep: Seq[(String, CacheConfig)] = {
-    val all =
-      Seq(1, 2, 4, 8, 16).map(k =>
-        "capacidade" -> base.copy(capacityBytes = k * 1024)
-      ) ++
-        Seq(1, 2, 4, 8).map(w => "associatividade" -> base.copy(ways = w)) ++
-        Seq(8, 16, 32, 64).map(l => "linha" -> base.copy(lineBytes = l)) ++
-        Seq(
-          ReplacementPolicy.Lru,
-          ReplacementPolicy.Fifo,
-          ReplacementPolicy.Random
-        ).map(p => "politica" -> base.copy(policy = p))
-    // a linha de base aparece em varios eixos: roda uma vez so
-    val seen = mutable.Set[CacheConfig]()
-    all.filter { case (_, c) => seen.add(c) }
-  }
+  private val base = CacheSweep.base
 
-  // Memoria de cada config: potencia de 2 que cobre o footprint do trace (1,5x a
-  // capacidade). O custo do Treadle cresce com o tamanho do design, entao nao se
-  // usa uma memoria unica de 64 KiB para todas as configs.
-  private def depthWordsFor(cfg: CacheConfig): Int = {
-    val footprintWords = cfg.capacityBytes * 3 / 2 / 4
-    math.max(256, Integer.highestOneBit(footprintWords - 1) << 1)
-  }
-  private val results = mutable.ListBuffer[String]()
+  // Mesma memoria (32 KiB) para todas as configs: o trace e o mesmo e cobre
+  // 24 KiB, entao nao ha motivo para a memoria variar com a geometria.
+  private val depthWords = CacheSweepTrace.MemoryWords
+
+  // Resultado de cada configuracao distinta. A linha de base roda uma vez e o
+  // CSV a repete em todos os eixos em que ela e um ponto.
+  private case class Stats(hits: Long, misses: Long, writeBacks: Long)
+  private val stats = mutable.Map[CacheConfig, Stats]()
 
   private def access(
       dut: CacheUnderTest,
@@ -176,42 +161,33 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.cpu.unsignedLoad.poke(false.B)
   }
 
-  for ((axis, cfg) <- sweep) {
+  for ((axis, cfg) <- CacheSweep.uniqueRuns) {
     it should s"funcionar com $axis: ${cfg.label}" in {
-      test(new CacheUnderTest(cfg, depthWordsFor(cfg))) { dut =>
+      test(new CacheUnderTest(cfg, depthWords)) { dut =>
         initCpu(dut)
         dut.io.flushDirty.poke(false.B)
-        val rng = new scala.util.Random(42)
-        // footprint 1,5x maior que a cache: forca despejos em todo conjunto
-        val regionLines = cfg.numLines * 3 / 2
-        val accesses = math.min(1500, math.max(400, 2 * cfg.numLines))
-        val memory = mutable.Map[Long, BigInt]() // palavra -> valor
+        // O MESMO trace para toda configuracao (ver CacheSweepTrace).
+        val trace = CacheSweepTrace.trace
+        val accesses = trace.size
+        val memory = mutable.Map[Long, BigInt]() // endereco -> valor
         val written = mutable.Set[Long]()
         val ref =
           if (cfg.policy == ReplacementPolicy.Random) None
           else Some(new RefCache(cfg))
 
-        for (_ <- 0 until accesses) {
-          // 70% dos pedidos vao para um quarto das linhas (localidade)
-          val lineIdx =
-            if (rng.nextInt(10) < 7) rng.nextInt(regionLines / 4 max 1)
-            else rng.nextInt(regionLines)
-          val word = rng.nextInt(cfg.wordsPerLine)
-          val addr = lineIdx.toLong * cfg.lineBytes + word * 4L
-          val write = rng.nextInt(4) == 0
-          if (write) {
-            val value = BigInt(rng.nextInt()) & 0xffffffffL
-            access(dut, addr, write = true, value)
-            memory(addr) = value
-            written += addr
+        for (a <- trace) {
+          if (a.write) {
+            access(dut, a.addr, write = true, a.value)
+            memory(a.addr) = a.value
+            written += a.addr
           } else {
-            val got = access(dut, addr, write = false, 0)
+            val got = access(dut, a.addr, write = false, 0)
             assert(
-              got == memory.getOrElse(addr, BigInt(0)),
-              s"leitura de 0x${addr.toHexString} devolveu $got"
+              got == memory.getOrElse(a.addr, BigInt(0)),
+              s"leitura de 0x${a.addr.toHexString} devolveu $got"
             )
           }
-          ref.foreach(_.access(addr, write))
+          ref.foreach(_.access(a.addr, a.write))
         }
 
         val hits = dut.io.perf.hits.peek().litValue.toLong
@@ -255,8 +231,8 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
           )
         }
 
+        stats(cfg) = Stats(hits, misses, writeBacks)
         val rate = hits.toDouble / accesses
-        results += f"$axis,${cfg.label},${cfg.capacityBytes},${cfg.ways},${cfg.lineBytes},${cfg.policy},$accesses,$hits,$misses,$writeBacks,$rate%.4f"
         println(
           f"[sweep] ${cfg.label}%-22s taxa de acerto = ${rate * 100}%.1f%%"
         )
@@ -265,6 +241,7 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   it should "gravar a varredura em target/cache-sweep.csv" in {
+    val accesses = CacheSweepTrace.trace.size
     val file = new File("target/cache-sweep.csv")
     file.getParentFile.mkdirs()
     val out = new PrintWriter(file)
@@ -272,8 +249,27 @@ class CacheGeometryTest extends AnyFlatSpec with ChiselScalatestTester {
       out.println(
         "eixo,config,capacidade_bytes,vias,linha_bytes,politica,acessos,hits,misses,write_backs,taxa_acerto"
       )
-      results.foreach(out.println)
+      // Todo ponto de todo eixo, inclusive a linha de base em cada um deles.
+      for ((axis, cfg) <- CacheSweep.axes) {
+        val s = stats.getOrElse(
+          cfg,
+          fail(s"config ${cfg.label} nao foi simulada")
+        )
+        val rate = s.hits.toDouble / accesses
+        out.println(
+          f"$axis,${cfg.label},${cfg.capacityBytes},${cfg.ways},${cfg.lineBytes},${cfg.policy},$accesses,${s.hits},${s.misses},${s.writeBacks},$rate%.4f"
+        )
+      }
     } finally out.close()
     assert(file.exists())
+  }
+
+  it should "ter a linha de base em todos os eixos do CSV" in {
+    for ((axis, points) <- CacheSweep.axes.groupBy(_._1)) {
+      assert(
+        points.exists(_._2 == base),
+        s"o eixo $axis nao tem a linha de base"
+      )
+    }
   }
 }
