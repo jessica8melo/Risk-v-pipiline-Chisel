@@ -1,0 +1,299 @@
+Este capítulo estabelece o contrato do subsistema de cache antes de qualquer consideração sobre como ele é construído. A distinção é deliberada e decorre do modelo de reconvergência discutido na seção~\ref{sec:2.6}: só existe verificação quando a especificação é a origem comum, e não a interpretação que dela se fez ao codificar. Por isso, o capítulo descreve o que cada módulo deve fazer, quais sinais troca e com que temporização, sem recorrer a construtos da linguagem. A implementação correspondente é objeto do \refCap{5_Implementacao}.
+
+\section{Organização geral do subsistema}\label{sec:4.1}
+
+O primeiro nível da hierarquia de memória é dividido em duas caches de estrutura idêntica, uma de instruções e uma de dados, instanciadas por um módulo coordenador. A cache de instruções é somente leitura e a de dados admite leitura e escrita, o que se obtém pela instanciação do mesmo módulo com um parâmetro que suprime a lógica de escrita e o bit de sujeira na primeira. Essa identidade estrutural não é economia de projeto apenas: é o que permite que a verificação de um dos lados sirva, com adaptações, à do outro, e é o que torna a parametrização discutida na seção~\ref{sec:2.5.1} uma decisão de arquitetura, e não um recurso acessório.
+
+As duas caches compartilham uma memória principal simulada, que arbitra pedidos simultâneos e admite latência configurável. Essa memória não é o modelo de um dispositivo real, e a seção~\ref{sec:4.5} explica por que sua existência é condição para a avaliação do \refCap{6_Verificacao}: sem um controlador de latência, toda falta custaria o mesmo número de ciclos e a comparação entre configurações mediria apenas a taxa de acerto.
+
+A organização dos módulos segue a separação entre estado, política e controle. O armazenamento das linhas, com tag, dado, validade e sujeira, reside em um módulo próprio; a escolha da vítima em um conjunto cheio reside em outro, isolado porque as três políticas da seção~\ref{sec:2.5.4} são alternativas resolvidas em tempo de elaboração; e o controle, com a máquina de estados, o cálculo de acerto e falta e a extração e mesclagem de dados, reside no módulo da cache propriamente dito. Um último módulo reúne a geometria e a decomposição do endereço, e é o único ponto em que as larguras de campo são definidas.
+
+A \refFig{fig:4.1} reúne essa organização em um único diagrama: o pipeline de três estágios no topo, as duas caches do primeiro nível com as suas interfaces, a máquina de estados que coordena o FENCE.I entre elas e, na base, a memória principal simulada. Os sinais anotados nas laterais correspondem exatamente aos das Tabelas~\ref{tab:4.5} e~\ref{tab:4.6}, de modo que o diagrama antecipa o contrato que as seções~\ref{sec:4.4} e~\ref{sec:4.5} detalham.
+
+\figuraFonte[!ht]{figura_4_1}{Organização do subsistema de cache: pipeline, caches L1 de instrução e de dados e memória principal}{autoria própria}{fig:4.1}{width=\textwidth}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 2\tabcolsep) * \real{0.2383}}>{\raggedright\arraybackslash}p{(\textwidth - 2\tabcolsep) * \real{0.7617}}@{}}
+\caption[Módulos do subsistema de cache e suas responsabilidades]{Módulos do subsistema de cache e suas responsabilidades (Fonte: autoria própria)}\label{tab:4.1}\\
+\hline
+\textbf{Módulo} & \textbf{Responsabilidade} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Módulo} & \textbf{Responsabilidade} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+Cache & controlador, máquina de estados, detecção de acerto e falta, extração e mesclagem de dados \\
+CacheArrays & armazenamento de tag, dado, validade e sujeira, por via e por conjunto \\
+CacheReplacement & escolha da vítima: LRU, FIFO ou aleatória \\
+L1Cache & instancia as duas caches e coordena o FENCE.I \\
+CacheMainMemory & memória principal simulada, com arbitragem, latência e canal de erro \\
+CacheParams / CacheConfig & geometria, política e decomposição do endereço \\
+CacheIO & definição das interfaces com o pipeline e com a memória, e dos contadores \\
+\end{longtable}
+}
+
+\section{Geometria e decomposição do endereço}\label{sec:4.2}
+
+A linha de base do projeto é de 8 KiB por cache, com linha de 16 bytes, quatro vias e política de reposição LRU. Dessa geometria resultam 512 linhas por cache e 128 conjuntos, e a capacidade total do primeiro nível é de 16 KiB, soma das duas caches.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.1932}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2470}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.5598}}@{}}
+\caption[Parâmetros da geometria da cache na configuração padrão]{Parâmetros da geometria da cache na configuração padrão (Fonte: autoria própria)}\label{tab:4.2}\\
+\hline
+\textbf{Parâmetro} & \textbf{Valor} & \textbf{Observação} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Parâmetro} & \textbf{Valor} & \textbf{Observação} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+Capacidade por cache & 8 KiB & 16 KiB no primeiro nível \\
+Tamanho da linha & 16 bytes & quatro palavras de 32 bits \\
+Associatividade & 4 vias & conjunto associativo por conjuntos \\
+Número de linhas & 512 & 8 KiB $\div$ 16 B \\
+Número de conjuntos & 128 & 512 $\div$ 4 \\
+Política de substituição & LRU & alternativas: FIFO e aleatória \\
+Política de escrita & escrita de volta com alocação & a cache de dados só escreve à memória no despejo ou no FENCE.I \\
+Concorrência & bloqueante & um pedido da CPU por vez em cada cache \\
+Largura da palavra & 4 bytes & acesso por byte, meia-palavra e palavra \\
+Endereço & 32 bits & endereço de byte \\
+\end{longtable}
+}
+
+A geometria é parametrizável, na forma discutida na seção~\ref{sec:2.2}, e a classe de configuração impõe quatro restrições que precisam ser verificadas na elaboração, e não em simulação: o tamanho da linha e o número de vias devem ser potências de dois, o tamanho da linha não pode ser inferior a 8 bytes, o número de conjuntos deve ser potência de dois e ao menos dois, e a capacidade deve ser múltipla do produto entre o tamanho da linha e o número de vias. A razão da última é que uma capacidade não múltipla produziria um conjunto incompleto, e a da penúltima é que a indexação exige um número de conjuntos potência de dois para que o índice seja um campo contíguo do endereço.
+
+A decomposição do endereço decorre diretamente dessa geometria. A tag ocupa os 21 bits mais significativos, o índice ocupa os 7 bits seguintes e o deslocamento ocupa os 4 bits menos significativos, que se subdividem em dois bits para selecionar a palavra dentro da linha e dois para selecionar o byte dentro da palavra.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 2\tabcolsep) * \real{0.3309}}>{\raggedright\arraybackslash}p{(\textwidth - 2\tabcolsep) * \real{0.6691}}@{}}
+\caption[Decomposição do endereço de 32 bits na configuração padrão]{Decomposição do endereço de 32 bits na configuração padrão (Fonte: autoria própria)}\label{tab:4.3}\\
+\hline
+\textbf{Campo} & \textbf{Função} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Campo} & \textbf{Função} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+tag & identifica o bloco que ocupa a via \\
+index & seleciona o conjunto entre 128 \\
+offset & posição do byte dentro da linha \\
+$\hookrightarrow$ palavra & qual das quatro palavras \\
+$\hookrightarrow$ byte & qual byte ou meia-palavra \\
+\end{longtable}
+}
+
+A \refFig{fig:4.2} representa essa decomposição de forma proporcional, com os três campos dispostos da esquerda para a direita e o deslocamento desdobrado em palavra e byte logo abaixo. A escala adotada deixa visível uma propriedade que a \refTab{tab:4.3} enuncia em números: a tag responde por cerca de dois terços da largura do endereço, e é essa proporção que explica por que ela concentra quase toda a sobrecarga discutida na seção~\ref{sec:2.5.2}.
+
+\figuraFonte[!ht]{figura_4_2}{Decomposição do endereço de 32 bits nos campos de tag, índice e deslocamento, com detalhe do deslocamento em palavra e byte}{autoria própria}{fig:4.2}{width=\textwidth}
+
+Cabe registrar uma propriedade que a especificação impõe e que simplifica a interface com a memória: o endereço enviado à memória principal é sempre alinhado ao início da linha, isto é, formado pela concatenação da tag e do índice com quatro zeros no campo de deslocamento. Como a transferência é sempre de uma linha inteira, a memória não precisa conhecer o deslocamento, e essa decisão é o que permite que uma única operação atenda a quatro palavras.
+
+\section{Estrutura da linha e arranjo de armazenamento}\label{sec:4.3}
+
+Cada via de cada conjunto armazena quatro campos, e a distinção entre eles não é apenas lógica, mas de tecnologia de armazenamento, o que tem consequência em área discutida na seção~\ref{sec:2.5.2}.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.1258}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.1275}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.2919}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.4547}}@{}}
+\caption[Campos da linha de cache e respectivo armazenamento]{Campos da linha de cache e respectivo armazenamento (Fonte: autoria própria)}\label{tab:4.4}\\
+\hline
+\textbf{Campo} & \textbf{Largura} & \textbf{Armazenamento} & \textbf{Descrição} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Campo} & \textbf{Largura} & \textbf{Armazenamento} & \textbf{Descrição} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+valid & 1 bit & registrador, reset em 0 & a linha contém dado válido \\
+dirty & 1 bit & registrador, reset em 0 & a linha foi modificada e difere da memória \\
+tag & 21 bits & memória de leitura combinacional & parte alta do endereço do bloco \\
+dado & 128 bits & memória de leitura combinacional & quatro palavras, escritas por máscara \\
+\end{longtable}
+}
+
+A \refFig{fig:4.3} dispõe esses quatro campos na ordem em que ocupam a linha. Os dois bits de controle ficam à esquerda, o bloco de dados à direita, e a leitura do desenho confirma a assimetria registrada na seção~\ref{sec:2.5.1}: validade e sujeira respondem por dois dos 151 bits, enquanto os dados respondem por 128. O desenho está deliberadamente fora de escala, porque em escala os dois bits de controle ocupariam menos de um pixel.
+
+\figuraFonte[!ht]{figura_4_3}{Estrutura da linha de cache: bits de validade e sujeira, tag e bloco de dados, com o total de 151 bits}{autoria própria}{fig:4.3}{width=\textwidth}
+
+A \refFig{fig:4.4} reúne em um só diagrama o percurso completo de um acesso: a decomposição do endereço, a comparação de tag nas quatro vias em paralelo, o arranjo que entrega tag e dado, a política de reposição que devolve a vítima e o controlador que governa os estados. A posição central do arranjo não é arbitrária: é ele que separa o caminho combinacional da leitura do caminho de controle, e é essa separação que a seção~\ref{sec:5.3} descreve em termos de construto de armazenamento.
+
+\figuraFonte[!ht]{figura_4_4}{Organização interna da cache: decomposição do endereço, comparação de tag, arranjo de armazenamento, política de reposição e controlador}{autoria própria}{fig:4.4}{width=\textwidth}
+
+A linha da cache de dados ocupa, assim, 151 bits, e a da cache de instruções dispensa o bit de sujeira. Para as 512 linhas de uma cache, o total é de 77.312 bits, dos quais 65.536 correspondem a dados úteis, 10.752 às tags e 1.024 aos dois bits de controle.
+
+Dois aspectos da especificação do arranjo merecem destaque, porque condicionam o \refCap{5_Implementacao}. O primeiro é que os bits de substituição não residem na linha, mas no módulo de política, por conjunto. Isso mantém a linha com largura fixa e permite que a política seja trocada sem alterar o formato do arranjo. O segundo é que a leitura do arranjo é combinacional e a escrita é síncrona, o que significa que uma linha gravada em um ciclo só é visível na leitura do ciclo seguinte. Essa propriedade é o que torna necessária a reavaliação do pedido após o preenchimento, descrita na seção~\ref{sec:4.6}.
+
+\section{Interface com o pipeline}\label{sec:4.4}
+
+Cada cache expõe ao pipeline uma porta idêntica, e as direções são definidas do ponto de vista do processador.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.1387}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.1710}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.1217}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.5686}}@{}}
+\caption[Sinais da interface entre a cache e o pipeline]{Sinais da interface entre a cache e o pipeline (Fonte: autoria própria)}\label{tab:4.5}\\
+\hline
+\textbf{Sinal} & \textbf{Direção} & \textbf{Largura} & \textbf{Descrição} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Sinal} & \textbf{Direção} & \textbf{Largura} & \textbf{Descrição} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+request & CPU $\rightarrow$ cache & 1 & pedido válido neste ciclo; permanece em 1 até hit ou fault \\
+write & CPU $\rightarrow$ cache & 1 & 0 para leitura, 1 para escrita; sempre 0 na cache de instruções \\
+address & CPU $\rightarrow$ cache & 32 & endereço de byte; deve permanecer estável durante a falta \\
+writeData & CPU $\rightarrow$ cache & 32 & dado da escrita, alinhado conforme o tamanho e o deslocamento \\
+memSize & CPU $\rightarrow$ cache & 2 & 0 para byte, 1 para meia-palavra, 2 para palavra \\
+unsignedLoad & CPU $\rightarrow$ cache & 1 & 1 para carga sem extensão de sinal \\
+readData & cache $\rightarrow$ CPU & 32 & dado da leitura, válido apenas no ciclo em que hit = 1 \\
+hit & cache $\rightarrow$ CPU & 1 & 1 no ciclo em que o pedido é atendido \\
+stall & cache $\rightarrow$ CPU & 1 & 1 enquanto a cache resolve o pedido; o pipeline deve congelar \\
+fault & cache $\rightarrow$ CPU & 1 & a memória recusou o preenchimento ou o despejo deste pedido \\
+\end{longtable}
+}
+
+Duas decisões dessa interface precisam ser justificadas, porque não são as mais óbvias. A primeira é a ausência de um sinal de falta. A falta não é uma saída, mas um estado derivado: a cache aceitou o pedido e ainda não o atendeu, o que corresponde a request em 1, hit em 0 e stall em 1. A razão de não expô-la é que o pipeline não tem uso para ela. O que o processador precisa saber é se deve congelar e se o dado está pronto, e a distinção entre esperar por uma falta e esperar pelo ciclo de comparação de um acerto não altera nenhuma decisão do estágio consumidor.
+
+A segunda é a definição de stall por situação, que fixa a temporização descrita na seção~\ref{sec:4.7}. A suspensão permanece asserida no ciclo de aceitação e em todos os estados de tratamento de falta, e é liberada no acerto e no estado de erro, conforme a \refTab{tab:4.7}.
+
+Sobre essa interface incidem três obrigações do lado do processador, todas verificáveis por asserção e não apenas por convenção. A primeira é manter estáveis o pedido, a escrita, o endereço, o dado de escrita, o tamanho e o modo de extensão enquanto o pedido não for atendido, porque a cache relê o endereço diretamente da porta durante toda a falta e não o preserva internamente; uma asserção em simulação acusa a mudança de endereço. A segunda é que a cache de dados não aceita acesso desalinhado, que o pipeline deve tratar como exceção antes de emitir o pedido. A terceira é que a cache de instruções não aceita escrita.
+
+O sinal de erro merece tratamento próprio. Ele é de nível, e não de pulso: sobe no ciclo seguinte ao erro da memória e permanece em 1 até que o processador derrube o pedido, de modo que a cache só retorna ao repouso quando o pedido cessa. A conversão para exceção fica no pipeline, que precisa excluir o erro de sua condição de espera e derrubar o pedido ao tomar o trap. A convenção adotada é a de falha de acesso à instrução ou falha de acesso a dado, conforme o lado, com o endereço do pedido no registrador de valor da exceção.
+
+\section{Interface com a memória principal}\label{sec:4.5}
+
+A cache transfere sempre uma linha inteira, com o par pedido e pronto, e as direções são definidas do ponto de vista da cache.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.1338}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.2470}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.1338}}>{\raggedright\arraybackslash}p{(\textwidth - 6\tabcolsep) * \real{0.4854}}@{}}
+\caption[Sinais da interface entre a cache e a memória principal]{Sinais da interface entre a cache e a memória principal (Fonte: autoria própria)}\label{tab:4.6}\\
+\hline
+\textbf{Sinal} & \textbf{Direção} & \textbf{Largura} & \textbf{Descrição} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Sinal} & \textbf{Direção} & \textbf{Largura} & \textbf{Descrição} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+request & cache $\rightarrow$ memória & 1 & operação pendente; permanece em 1 até ready ou fault \\
+write & cache $\rightarrow$ memória & 1 & 0 para leitura de linha, 1 para escrita de linha \\
+address & cache $\rightarrow$ memória & 32 & endereço alinhado ao início da linha \\
+writeLine & cache $\rightarrow$ memória & 128 & linha a gravar no despejo \\
+readLine & memória $\rightarrow$ cache & 128 & linha lida, amostrada no ciclo em que ready = 1 \\
+ready & memória $\rightarrow$ cache & 1 & a operação terminou \\
+fault & memória $\rightarrow$ cache & 1 & a memória recusou a operação \\
+\end{longtable}
+}
+
+Duas operações resultam da combinação entre pedido e escrita. Na leitura de linha, a cache entrega o endereço e recebe a linha, que grava com validade em 1 e sujeira em 0. Na escrita de linha, entrega o endereço e a linha, e a memória a grava. Não há operação de escrita parcial: mesmo o acerto de armazenamento não gera tráfego, porque a escrita ocorre na cache e a memória só é atualizada no despejo.
+
+O modelo de memória implementa quatro comportamentos que a especificação precisa fixar, porque deles depende a reprodutibilidade dos experimentos. O primeiro é a latência, expressa em ciclos, com o pronto subindo N ciclos após o primeiro ciclo em que o pedido é visto; com latência zero, a resposta é combinacional e ocorre no mesmo ciclo. O segundo é a arbitragem entre as duas caches: a memória atende uma transação por vez, a porta escolhida no primeiro ciclo permanece dona do barramento até concluir e, em caso de empate, a cache de dados tem prioridade. O terceiro é a possibilidade de aborto: se o pedido cair antes do pronto, a transação é descartada sem escrever nada. O quarto é o canal de erro: endereço fora da faixa, ou desalinhado, é recusado com erro no lugar do pronto, após a mesma latência, e nenhuma escrita é efetuada.
+
+O quarto comportamento é o que merece justificativa, porque sua ausência teria consequência silenciosa. Sem o canal de erro, um acesso fora da faixa deixaria a cache aguardando um pronto que nunca chegaria, e o sistema congelaria sem diagnóstico. Com ele, o erro sobe à cache, que o repassa ao processador, e a simulação termina com uma exceção identificável em vez de um travamento.
+
+\section{Máquina de estados do controlador}\label{sec:4.6}
+
+O controlador de cada cache é bloqueante e tem oito estados, e o reset conduz ao estado de repouso. A escolha por oito estados, e não por uma máquina maior, decorre da decisão de separar o caminho de acesso do caminho de consistência: os cinco primeiros estados atendem pedidos do processador e os três últimos executam a drenagem de linhas sujas exigida pelo FENCE.I. Essa separação será retomada na seção~\ref{sec:4.8}.
+
+A \refFig{fig:4.5} representa os oito estados do controlador, agrupados conforme a separação entre o caminho de acesso e o caminho de consistência: os cinco primeiros atendem pedidos do processador e os três últimos executam a drenagem exigida pelo FENCE.I. Sob cada nome em português consta o identificador usado no código, e cada transição está rotulada pela condição que a dispara. O retorno da escrita de drenagem à varredura, e não ao conjunto seguinte, é o que garante que um conjunto com mais de uma via suja seja drenado por completo.
+
+\figuraFonte[!ht]{figura_4_5}{Máquina de estados do controlador da cache: repouso, comparação, despejo, preenchimento e erro, e os estados de drenagem varredura, escrita de drenagem e conclusão}{autoria própria}{fig:4.5}{width=\textwidth}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 2\tabcolsep) * \real{0.4015}}>{\raggedright\arraybackslash}p{(\textwidth - 2\tabcolsep) * \real{0.5985}}@{}}
+\caption[Estados do controlador, saídas e condições de transição]{Estados do controlador, saídas e condições de transição (Fonte: autoria própria)}\label{tab:4.7}\\
+\hline
+\textbf{Estado} & \textbf{O que faz} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Estado} & \textbf{O que faz} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+repouso & assere a suspensão se há pedido ou drenagem; não acessa a memória \\
+comparação & lê o conjunto e compara a tag em todas as vias \\
+despejo & pede a escrita da linha da vítima à memória \\
+preenchimento & pede a leitura da linha e a grava nos arranjos \\
+erro & assere o sinal de erro e libera a suspensão \\
+varredura & percorre os conjuntos em busca de via válida e suja \\
+escrita de drenagem & pede a escrita da linha suja à memória \\
+conclusão & assere a conclusão da drenagem \\
+\end{longtable}
+}
+
+Três transições merecem comentário, porque condensam decisões de projeto. A primeira é a que parte da comparação em caso de falta: a vítima é registrada nesse instante, e a escolha entre despejo e preenchimento depende de ela estar simultaneamente válida e suja. Uma vítima inválida nunca precisa de despejo, e uma vítima limpa também não, porque sua cópia na memória já é idêntica. A distinção não é otimização, é correção: despejar uma linha limpa introduziria tráfego inútil e, pior, um erro de memória que não deveria ocorrer.
+
+A segunda é o retorno do preenchimento à comparação, e não ao repouso. Como a escrita no arranjo é síncrona, a linha recém-gravada não seria visível se a cache entregasse o dado no mesmo ciclo; ao retornar à comparação, o mesmo pedido é reavaliado um ciclo depois, agora como acerto, e o dado é extraído da linha já presente. Dessa decisão decorre uma propriedade registrada na seção~\ref{sec:2.5.4}: a linha recém-alocada passa a ser a mais recentemente usada pelo acerto que a atende, e não por um sinal dedicado de alocação.
+
+A terceira é a transição da escrita de drenagem para a varredura, e não para o conjunto seguinte. É esse retorno ao mesmo conjunto que garante a drenagem completa de um conjunto com mais de uma via suja, uma vez que cada passagem trata uma única via e o conjunto é reavaliado na passagem imediatamente posterior. O avanço do índice só ocorre quando a varredura não encontra nenhuma via suja.
+
+\section{Protocolo de troca e temporização}\label{sec:4.7}
+
+O protocolo com o pipeline estabelece que o processador ergue o pedido com o endereço e os demais campos e os mantém estáveis até a cache sinalizar o fim; que o pedido termina em um ciclo com acerto e dado válido, ou com erro; que, após o acerto ou o erro, o processador derruba ou troca o pedido; e que a escrita é aceita no ciclo do acerto, com a gravação nos arranjos ocorrendo na borda seguinte.
+
+O protocolo com a memória estabelece que a cache ergue o pedido, a escrita e o endereço, e os mantém até o pronto ou o erro; que, no ciclo do pronto, a leitura é válida e a cache a grava na borda seguinte, e a escrita é efetuada pela memória; que pronto e erro nunca sobem juntos; e que, após um erro, a cache não grava nada nos arranjos.
+
+Desses dois protocolos decorre a temporização que o \refCap{6_Verificacao} mede, e que a especificação precisa fixar em fórmula e não em exemplo.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.4689}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2913}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2398}}@{}}
+\caption[Temporização por operação em função da latência da memória]{Temporização por operação em função da latência da memória (Fonte: autoria própria)}\label{tab:4.8}\\
+\hline
+\textbf{Operação} & \textbf{Ciclos até o acerto} & \textbf{Ciclos de falta} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Operação} & \textbf{Ciclos até o acerto} & \textbf{Ciclos de falta} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+Acerto, de leitura ou de escrita & 2 & 0 \\
+Falta com vítima limpa ou inválida & L + 4 & L + 2 \\
+Falta com vítima suja & 2L + 5 & 2L + 3 \\
+Falta em preenchimento recusado & erro no ciclo L + 3 & não se aplica \\
+Falta em despejo recusado & erro no ciclo L + 3 & não se aplica \\
+\end{longtable}
+}
+
+A \refFig{fig:4.6} converte a \refTab{tab:4.8} em linha do tempo, com latência dois. As três barras mostram que aceitação e comparação custam os mesmos dois ciclos nas três situações, e que todo o acréscimo aparece depois da detecção da falta. O desenho torna visível a propriedade que a tabela enuncia em fórmula: a diferença entre a falta limpa e a falta suja é exatamente o despejo, L + 1 ciclos.
+
+\figuraFonte[!ht]{figura_4_6}{Temporização do acerto, da falta com vítima limpa ou inválida e da falta com vítima suja, em ciclos, com latência L = 2}{autoria própria}{fig:4.6}{width=0.85\textwidth}
+
+Com latência zero, os valores degeneram em acerto em dois ciclos, falta limpa em quatro e falta com despejo em cinco. Duas leituras se extraem da tabela, e ambas sustentam capítulos posteriores. A primeira é que o acerto custa dois ciclos independentemente da geometria, o que confirma o que a seção~\ref{sec:2.5.1} registrou: o custo da separação entre aceitação e comparação recai igualmente sobre todos os acessos, e não apenas sobre os que faltam. A segunda é que a diferença entre falta limpa e falta suja é de L + 1 ciclos, e não de um ciclo, porque o despejo e o preenchimento são duas transações completas em série.
+
+Se a memória estiver ocupada com a outra cache, soma-se o tempo restante da transação em curso, e é por isso que a especificação precisa declarar que os valores acima valem para memória livre.
+
+\section{Consistência entre as duas caches}\label{sec:4.8}
+
+A obrigação estabelecida na seção~\ref{sec:2.5.5} se materializa, na especificação, como uma segunda máquina de estados, com quatro estados, que reside no módulo coordenador e opera sobre as duas caches do primeiro nível, tanto a de instruções quanto a de dados, descritas na seção~\ref{sec:4.1}. Enquanto ela não está no estado de repouso, os pedidos do processador às duas caches ficam bloqueados, o que se obtém filtrando o sinal de pedido antes de alcançar as caches.
+
+A ordem entre os dois estados intermediários não é preferência de projeto, e sim exigência de correção já justificada na seção~\ref{sec:2.5.5}: como a invalidação limpa o bit de sujeira junto com o de validade, aplicá-la antes da drenagem destruiria em silêncio exatamente os dados que a drenagem deveria preservar. A separação em uma máquina própria, por sua vez, decorre de uma razão estrutural: a operação envolve as duas caches e a memória, e nenhuma delas é o lugar adequado para coordenar as outras duas.
+
+A \refFig{fig:4.7} dispõe as três etapas na ordem em que precisam ocorrer e mostra que os pedidos das duas caches permanecem bloqueados do primeiro ao último ciclo da operação. A seta que liga a drenagem à invalidação é o ponto crítico do desenho: invertê-la produziria perda silenciosa de dados, pelas razões expostas na seção~\ref{sec:2.5.5}, e é por isso que a ordem aparece explicitamente na figura e não apenas no texto.
+
+\figuraFonte[!ht]{figura_4_7}{Sequência de operações da instrução FENCE.I: drenagem da cache de dados, invalidação da cache de instruções e conclusão}{autoria própria}{fig:4.7}{width=0.77\textwidth}
+
+Cabe registrar uma propriedade do sinal de conclusão que condiciona a implementação. Ele é de nível e se mantém alto enquanto a operação for solicitada, encerrando-se quando o solicitante retira o pedido. É, portanto, o nível do sinal, e não a sua borda, que deve ser observado, e essa definição precisa estar na especificação porque a alternativa, um pulso de um ciclo, seria indistinguível da ausência de conclusão em um solicitante mais lento.
+
+A especificação fixa também o custo em ciclos da operação, porque ele condiciona a avaliação do \refCap{6_Verificacao}. O custo é dado por ciclos = numSets + 4 + $\Sigma$ (L + 2), em que o primeiro termo corresponde à varredura de um ciclo por conjunto, o segundo ao handshake entre as duas máquinas de estados e o somatório ao custo de cada linha suja, que soma um ciclo de varredura e L + 1 ciclos de gravação. A expressão é verificada na seção~\ref{sec:6.3.1}, e o termo fixo de quatro ciclos é resultado dessa verificação, e não uma previsão da especificação.
+
+\section{Observabilidade}\label{sec:4.9}
+
+A especificação prevê seis contadores de desempenho por cache, com 64 bits cada, que constituem o instrumento de medida do \refCap{6_Verificacao}: acertos, faltas, despejos, despejos de drenagem, erros e ciclos de falta. A definição de cada um precisa ser fixada com cuidado, porque a fronteira entre eles não é evidente. O caso que exige convenção explícita é o acerto que atende o pedido reavaliado após um preenchimento: ele não é contado como acerto, de modo que a soma entre acertos e faltas é igual ao número de pedidos atendidos, e não ao número de ciclos de comparação bem-sucedidos. Sem essa convenção, a taxa de acerto calculada no \refCap{6_Verificacao} seria inflada por um acerto espúrio por falta.
+
+Além dos contadores, a especificação prevê um conjunto de testes que delimita o que precisa ser verificado e que o \refCap{6_Verificacao} retoma: máquina de estados, acerto, política de reposição, arranjo, modelo de memória, latência e pedidos simultâneos, canal de erro, contadores e geometria parametrizável, bem como um teste de integração que exercita o pipeline completo com memória lenta, FENCE.I e instruções comprimidas que cruzam a fronteira entre linhas. Essa lista é a materialização, no projeto, do princípio da seção~\ref{sec:2.6} de que a cobertura funcional se mede contra as funcionalidades especificadas, e não contra o texto do código.

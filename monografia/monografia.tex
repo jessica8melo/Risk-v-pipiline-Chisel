@@ -6,41 +6,54 @@
 %  - Graduação: bacharelado|engenharia|licenciatura
 %  - Pós-graduação: [qualificacao], mestrado|doutorado, ppca|ppginf
 
-% \documentclass[engenharia]{UnB-CIC}%
-\documentclass[qualificacao,mestrado,ppca]{UnB-CIC}%
+\documentclass[engenharia]{UnB-CIC}%
 
-\usepackage{pdfpages}% incluir PDFs, usado no apêndice
+% Pacotes adicionais, necessários apenas para as tabelas deste trabalho
+% (tabelas longas, colunas com largura fixa e cálculo de larguras).
+\usepackage{array}%
+\usepackage{longtable}%
+\usepackage{calc}%
+
+% Figura com fonte própria (sem referência bibliográfica); a legenda curta, usada na
+% lista de figuras, não inclui a fonte. Segue o formato de \figuraBib do modelo.
+\newcommand{\figuraFonte}[6][!ht]{%
+	\begin{figure}[#1]%
+		\begin{center}%
+			\includegraphics[#6]{#2}%
+			\caption[#3.]{#3~(Fonte: #4).\label{#5}}%
+		\end{center}%
+	\end{figure}%
+}%
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Informações do Trabalho
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\orientador{\prof \dr Guilherme Novaes Ramos}{CIC/UnB}%
-%\coorientador{\prof \dr José Ralha}{CIC/UnB}
-\coordenador[a]{\prof[a] \dr[a] Ada Lovelace}{Bibliothèque universelle de Genève}%
-\diamesano{24}{dezembro}{2014}%
+\orientador{\prof \dr Ricardo Pezzuol Jacobi}{CIC/UnB}%
 
-\membrobanca{\prof \dr Donald Knuth}{Stanford University}%
-\membrobanca{\dr Leslie Lamport}{Microsoft Research}%
+% PREENCHER: dados da página de aprovação (não constam no texto original).
+\coordenador{\prof \dr Nome do Coordenador do Curso}{CIC/UnB}%
+\diamesano{\ \ \ \ }{\ \ \ \ \ \ \ \ \ \ }{2026}%
 
-\autor{Guilherme N.}{Ramos}%
+\membrobanca{\prof \dr Nome do Membro da Banca}{Instituição}%
+\membrobanca{\prof \dr Nome do Membro da Banca}{Instituição}%
 
-\titulo{UnB-CIC: Uma classe em LaTeX para textos do Departamento de Ciência da Computação}%
+\autor{Jéssica Leal de}{Melo}%
 
-\palavraschave{LaTeX, metodologia científica, trabalho de conclusão de curso}%
-\keywords{LaTeX, scientific method, thesis}%
+\titulo{Desenvolvimento de Sistema Cache de Processador RISC-V em Linguagem Chisel}%
 
-\newcommand{\unbcic}{\texttt{UnB-CIC}}%
+\palavraschave{RISC-V, Memória Cache, Chisel, Hierarquia de Memória, Arquitetura de Computadores}%
+\keywords{RISC-V, Cache Memory, Chisel, Memory Hierarchy, Computer Architecture}%
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Texto
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{document}%
     \capitulo{1_Introducao}{Introdução}%
-    \capitulo{2_UnB-CIC}{A Classe \unbcic}%
-    \capitulo{3_TCC}{Trabalho de Conclusão de Curso}%
-    \capitulo{4_Apresentacao}{Apresentações}%
-
-    \apendice{Apendice_Fichamento}{Fichamento de Artigo Científico}%
-    \anexo{Anexo1}{Documentação Original \unbcic\ (parcial)}%
+    \capitulo{2_Fundamentacao}{Fundamentação Teórica}%
+    \capitulo{3_TrabalhosRelacionados}{Trabalhos Relacionados}%
+    \capitulo{4_Especificacao}{Especificação da Cache}%
+    \capitulo{5_Implementacao}{Metodologia e Implementação}%
+    \capitulo{6_Verificacao}{Verificação e Resultados}%
+    \capitulo{7_Conclusao}{Conclusão}%
 \end{document}%

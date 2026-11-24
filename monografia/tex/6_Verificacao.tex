@@ -1,0 +1,336 @@
+Este capítulo aplica ao subsistema descrito no \refCap{5_Implementacao} os critérios fixados na seção~\ref{sec:2.6}. A exposição se divide em duas partes, e a divisão não é meramente organizacional. A primeira responde se o projeto faz o que a especificação determina, e tem por instrumento a bateria de testes automatizados. A segunda responde quanto o subsistema custa e quanto economiza, e tem por instrumento os contadores de desempenho. As duas se apoiam no mesmo ambiente de execução, mas medem coisas distintas: a primeira produz um veredito binário por caso, a segunda produz números que só significam algo quando acompanhados da descrição da carga que os gerou.
+
+Uma observação preliminar sobre o alcance do que aqui se apresenta. Conforme a seção~\ref{sec:2.6} estabeleceu, o resultado de uma verificação é sempre negativo ou inconclusivo: é possível demonstrar que um projeto não implementa a função pretendida exibindo uma única discrepância, mas não é possível demonstrar a inexistência de discrepâncias~\cite{bergeron2006testbenches}. O conjunto de 179 casos aprovados que este capítulo reporta deve ser lido nesse registro, e não como certificado de correção.
+
+\section{Ambiente de verificação}\label{sec:6.1}
+
+Os testes são escritos com ScalaTest e ChiselTest, sobre Scala 2.13.14, Chisel 3.6.1 e chiseltest 0.6.1, com sbt 1.12.8. O simulador empregado é o Treadle, interpretador escrito em Scala que acompanha a série 3.x do Chisel e executa o circuito elaborado dentro da própria máquina virtual. O Verilator é alternativa disponível, mas não é o simulador padrão do projeto: ele aparece em um único caso, marcado como lento na suíte de política de reposição, e é ativado por variável de ambiente. Como a integração contínua não instala o Verilator nem define essa variável, todos os resultados deste capítulo provêm do Treadle.
+
+Essa distinção condiciona a leitura de tudo o que segue. Os resultados descrevem o comportamento do circuito elaborado e simulado de forma interpretada, e não o de um binário compilado para uma ferramenta de simulação síncrona, o que é suficiente para verificação funcional e para a contagem de eventos, mas não para a medição de frequência máxima de operação.
+
+A execução dos testes se dá em processo separado, com paralelismo entre suítes e pilha ampliada para dezesseis megabytes, o que evita que a máquina virtual seja encerrada por estouro de pilha em testes com muitas iterações. Um ajuste adicional foi necessário e merece registro, porque condiciona a viabilidade da varredura. O escalonador do Treadle, na versão distribuída no artefato da biblioteca, tem custo quadrático no número de eventos; com a varredura de treze configurações sobre um trace de mil e quinhentos acessos, esse custo tornava a execução impraticável. A correção consistiu em substituir a classe do escalonador por uma versão de custo linear, e um teste dedicado confere que a cópia corrigida é efetivamente a carregada em tempo de execução. Sem esse ajuste, a avaliação experimental prevista na seção~\ref{sec:4.2} não caberia no tempo disponível, o que faz dele parte da infraestrutura de medida, e não otimização acessória.
+
+A integração contínua executa, em tarefas separadas, a verificação de formatação e a bateria completa de testes a cada alteração. A execução de referência, de 23 de novembro de 2026, compreendeu trinta suítes e cento e oitenta casos: cento e setenta e nove aprovados, nenhum reprovado e um cancelado, em dois minutos e vinte e quatro segundos. O caso cancelado é o que executa um programa em hexadecimal e exige que o caminho do arquivo seja fornecido por variável de ambiente; a ausência da variável faz o teste se declarar cancelado, e não aprovado, o que é a conduta correta segundo o critério de determinação de sucesso discutido na seção~\ref{sec:2.6}.
+
+\section{Organização dos testes e cobertura das operações}\label{sec:6.2}
+
+As trinta suítes se distribuem em três grupos: setenta e seis casos sobre o subsistema de cache, cinquenta e quatro sobre a integração com o pipeline e cinquenta sobre os demais módulos do núcleo. A \refTab{tab:6.1} reúne as suítes de cache, que são as que interessam a este trabalho.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2729}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.0915}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.6356}}@{}}
+\caption[Suítes de teste do subsistema de cache e respectiva cobertura]{Suítes de teste do subsistema de cache e respectiva cobertura (Fonte: autoria própria)}\label{tab:6.1}\\
+\hline
+\textbf{Suíte} & \textbf{Casos} & \textbf{Cobertura} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Suíte} & \textbf{Casos} & \textbf{Cobertura} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+CacheTest & 8 & geometria derivada, soma dos campos do endereço, independência entre as duas caches \\
+CacheArraysTest & 4 & estado inicial, escrita e leitura de linha, máscara de palavra, habilitação de metadados \\
+CacheDirtyBitTest & 3 & existência condicional do bit de sujeira, leitura constante em zero na cache de instruções \\
+CacheFsmTest & 8 & máquina de estados: repouso, falta de leitura, falta de escrita, despejo, drenagem, acesso de byte e meia-palavra \\
+CacheHitTest & 5 & caminho de acerto nas quatro vias, alternância entre vias, escrita por byte e meia-palavra \\
+CacheLruTest & 4 & ordem de reposição, despejo por via, independência por conjunto, modelo de referência \\
+CacheMainMemoryTest & 9 & pré-carga, visibilidade entre as duas caches, arbitragem, limite de capacidade, reset \\
+CacheMemoryLatencyTest & 7 & latência 1, 3 e 6; arbitragem e aborto; falta simultânea; consistência \\
+CacheFaultTest & 5 & canal de erro no preenchimento, no despejo e na drenagem \\
+CachePerfTest & 2 & os seis contadores, na cache isolada e no coordenador \\
+CacheGeometryTest & 17 & validação de configurações e varredura de treze geometrias contra modelo \\
+CacheSweepTraceTest & 4 & determinismo do trace e independência em relação à geometria \\
+\end{longtable}
+}
+
+Cabe registrar uma observação de honestidade sobre a primeira suíte. Alguns casos da suíte CacheTest são remanescentes de uma fase anterior do desenvolvimento e hoje apenas confirmam que a suspensão é asserida e que não há acerto em uma falta a frio; não verificam a geometria nem a decomposição do endereço com a profundidade que os nomes sugerem. A suíte permanece útil como teste de fumaça, mas não deve ser contada como cobertura dos aspectos que o título anuncia.
+
+As cinco operações que definem o comportamento funcional de uma cache de dados têm verificação direta, e cada uma é confirmada por mais de uma suíte, em níveis distintos de abstração: a máquina de estados isolada, o caminho de acerto em todas as vias, a memória com latência e a varredura contra modelo. A \refTab{tab:6.2} reúne essa correspondência.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 2\tabcolsep) * \real{0.2500}}>{\raggedright\arraybackslash}p{(\textwidth - 2\tabcolsep) * \real{0.7500}}@{}}
+\caption[Cobertura das operações de cache e o que cada conjunto de testes comprova]{Cobertura das operações de cache e o que cada conjunto de testes comprova (Fonte: autoria própria)}\label{tab:6.2}\\
+\hline
+\textbf{Operação} & \textbf{O que os testes comprovam} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Operação} & \textbf{O que os testes comprovam} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+Leitura com acerto & custa dois ciclos e não acessa a memória; acerta nas quatro vias e em todas as palavras da linha; a cache de instruções devolve a palavra inteira \\
+Leitura com falta & o preenchimento lê exatamente uma linha e nenhuma escrita é emitida; o custo cresce com a latência; faltas simultâneas das duas caches são serializadas \\
+Escrita com acerto & grava apenas a palavra alvo e marca sujeira somente na linha escrita; acesso de byte e de meia-palavra faz mesclagem; a memória não é atualizada \\
+Escrita com falta & a linha é trazida, a escrita é aplicada na cache e a linha fica suja, sem tráfego de escrita à memória \\
+Substituição de linha suja & o despejo gera exatamente um despejo com o conteúdo correto; linha limpa não gera tráfego; a vítima segue a ordem de recência por conjunto \\
+\end{longtable}
+}
+
+Três verificações dessa tabela merecem comentário, porque sustentam afirmações feitas em capítulos anteriores. A primeira é que a igualdade entre acertos e faltas, de um lado, e o número de pedidos, de outro, é verificada explicitamente, o que materializa a convenção fixada na seção~\ref{sec:4.9} de que o acerto que atende o pedido reavaliado após um preenchimento não é contado como acerto. A segunda é que o custo de cinco faltas, sendo quatro limpas e uma com despejo, é conferido como onze ciclos de falta, o que corresponde a quatro vezes dois mais três e confirma a fórmula da seção~\ref{sec:4.7} no caso em que a latência é zero. A terceira é que, com latência três, a cache de instruções que solicita uma linha em processo de despejo só é atendida depois que o despejo termina, o que verifica a regra de prioridade da cache de dados fixada na seção~\ref{sec:4.5}.
+
+Uma lacuna de cobertura precisa ser declarada. A política de reposição aleatória é exercitada apenas na varredura, onde os dados são conferidos contra o modelo, mas os números de acerto, falta e despejo não têm modelo de referência correspondente, porque o modelo implementa LRU e FIFO e a sequência do registrador de deslocamento é reproduzível mas não trivial de antecipar. Em consequência, o resultado da política aleatória na seção~\ref{sec:6.6} verifica que o dado lido está correto, e não que a escolha da vítima obedeceu à política.
+
+\section{A verificação do mecanismo de consistência}\label{sec:6.3}
+
+O mecanismo de consistência recebe tratamento próprio porque é o único ponto do subsistema em que a correção depende de uma ordem entre operações, e não apenas do resultado de cada uma. A \refTab{tab:6.3} reúne os testes que o exercitam.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2222}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.3333}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.4444}}@{}}
+\caption[Testes do mecanismo de consistência e o que cada um comprova]{Testes do mecanismo de consistência e o que cada um comprova (Fonte: autoria própria)}\label{tab:6.3}\\
+\hline
+\textbf{Teste} & \textbf{Cenário} & \textbf{O que comprova} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Teste} & \textbf{Cenário} & \textbf{O que comprova} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+Integração, código automodificável & sub-rotina reescrita por armazenamento após a primeira chamada, seguida da instrução de sincronização e de nova chamada & a segunda chamada devolve o valor novo, com latência zero e com latência quatro \\
+Latência de memória & dois armazenamentos com alocação, sincronização, busca pela cache de instruções & a cache de instruções lê os valores gravados pela cache de dados; a palavra não escrita permanece zero \\
+Tráfego aleatório & sequência de leituras e escritas, depois sincronização & todo o conteúdo escrito está na memória e é visível à cache de instruções \\
+Contadores & armazenamento, sincronização, leitura dos contadores & os despejos de drenagem são contados separadamente dos despejos por falta \\
+Máquina de estados & uma linha suja entre linhas limpas & apenas a linha suja gera tráfego; ela permanece residente, mas limpa \\
+Varredura & drenagem após o trace, nas treze configurações & a drenagem grava exatamente as linhas sujas, e nenhum dado se perde \\
+Canal de erro & memória recusa o despejo da drenagem & a operação aborta sem travar e assinala a falha; nova drenagem sem erro conclui e limpa o sinal \\
+\end{longtable}
+}
+
+O caso de código automodificável é o mais forte do conjunto, e vale explicitar por quê. A sub-rotina é chamada, devolve um valor, é reescrita por um armazenamento, que deixa a linha suja na cache de dados, a instrução de sincronização é executada e a sub-rotina é chamada de novo. Se a drenagem não ocorresse, a memória ainda conteria a versão antiga; se a invalidação não ocorresse, a cache de instruções ainda conteria a versão antiga. Como o teste exige o valor novo nas duas latências, ele falharia em qualquer das duas omissões, e é essa conjunção que verifica a obrigação da seção~\ref{sec:4.8} como um todo, e não cada operação isoladamente.
+
+O teste de varredura acrescenta uma garantia de outra natureza. Como ele roda a drenagem após o trace em treze geometrias distintas e compara o resultado com o modelo, ele verifica que a drenagem funciona sob varredura de conjuntos, com número variável de vias e de conjuntos, situação em que um erro de índice ou de avanço do registrador de varredura se manifestaria em algumas geometrias e não em outras.
+
+Uma lacuna permanece declarada nesta seção: a sinalização de falha da sincronização é verificada apenas na cache isolada, não no coordenador nem no pipeline, o que decorre de a saída de falha do coordenador apenas repassar o sinal da cache de dados, sem lógica própria a verificar. O custo em ciclos da instrução, que uma versão anterior deste capítulo declarava não medido, foi objeto de instrumentação própria e é apresentado nas seções~\ref{sec:6.3.1} a~\ref{sec:6.3.3}.
+
+\subsection{Custo na cache isolada}\label{sec:6.3.1}
+
+A medição na cache isolada liga o coordenador a uma memória de latência configurável e executa três passos. Primeiro, sujam-se N linhas por meio de armazenamentos em endereços de linhas distintas, de modo que cada um deixe uma linha suja sem provocar despejo. Em seguida, ergue-se o pedido de sincronização e contam-se os ciclos de relógio até o sinal de conclusão. Por fim, confere-se o resultado tanto pela expressão de custo quanto pelo contador de despejos de drenagem, que deve registrar exatamente as N linhas. Como a contagem é feita em ciclos de relógio sobre um modelo determinístico, a medida não tem ruído, e o resultado é uma verificação da máquina de estados, e não apenas um número.
+
+A \refTab{tab:6.4} apresenta os resultados na configuração de 1 KiB, com dezesseis conjuntos, e a \refTab{tab:6.5} os da configuração de base, com cento e vinte e oito conjuntos.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2100}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2100}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2300}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.1700}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.1800}}@{}}
+\caption[Custo da sincronização na cache isolada de 1 KiB, em ciclos, por latência da memória e número de linhas sujas]{Custo da sincronização na cache isolada de 1 KiB, em ciclos, por latência da memória e número de linhas sujas (Fonte: autoria própria, a partir da execução de 23 de novembro de 2026)}\label{tab:6.4}\\
+\hline
+\textbf{Linhas sujas} & \textbf{L = 0} & \textbf{L = 1} & \textbf{L = 3} & \textbf{L = 6} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Linhas sujas} & \textbf{L = 0} & \textbf{L = 1} & \textbf{L = 3} & \textbf{L = 6} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+0 & 20 & 20 & 20 & 20 \\
+1 & 22 & 23 & 25 & 28 \\
+2 & 24 & 26 & 30 & 36 \\
+64 & 148 & 212 & 340 & 532 \\
+\end{longtable}
+}
+
+A \refFig{fig:6.1} representa os dados da \refTab{tab:6.4} e mostra que as quatro curvas partem do mesmo patamar quando não há linha suja, separando-se à medida que o número de linhas a gravar cresce.
+
+\figuraFonte[!ht]{figura_6_1}{Custo da instrução de sincronização em ciclos, por latência da memória e número de linhas sujas}{autoria própria, a partir da execução de 23 de novembro de 2026}{fig:6.1}{width=\textwidth}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.4689}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2913}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2398}}@{}}
+\caption[Custo da sincronização na configuração de base, com 128 conjuntos e latência três, medido e previsto]{Custo da sincronização na configuração de base, com 128 conjuntos e latência três, medido e previsto (Fonte: autoria própria, a partir da execução de 23 de novembro de 2026)}\label{tab:6.5}\\
+\hline
+\textbf{Linhas sujas} & \textbf{Medido} & \textbf{Previsto} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Linhas sujas} & \textbf{Medido} & \textbf{Previsto} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+0 & 132 & 132 \\
+1 & 137 & 137 \\
+2 & 142 & 142 \\
+512 & 2.692 & 2.692 \\
+\end{longtable}
+}
+
+Em todas as vinte combinações ensaiadas o valor medido coincidiu exatamente com o previsto, sem divergência de um único ciclo. A expressão que os dados confirmam é ciclos = numSets + 4 + $\Sigma$ (L + 2), em que cada linha suja responde por um ciclo de varredura e por L + 1 ciclos de gravação. Duas leituras decorrem daí. A primeira é que a expressão da seção~\ref{sec:4.8} fica verificada, e não apenas estimada: o circuito e o cálculo são descrições independentes que convergem em vinte pontos. A segunda é uma correção a essa expressão, que registrava a varredura como um ciclo por conjunto sem termo fixo adicional; os dados mostram quatro ciclos a mais, correspondentes ao handshake entre a máquina de estados do coordenador e a da cache. O mínimo, portanto, não é 128 ciclos na configuração de base, e sim 132.
+
+O pior caso construído da configuração de base, com todas as 512 linhas sujas e latência três, custa 2.692 ciclos, dos quais 2.560 correspondem às gravações e 132 à varredura. Com poucas linhas sujas, o custo é dominado pela varredura: em 1 KiB, uma única linha suja acrescenta dois ciclos a um piso de vinte.
+
+\subsection{Custo no pipeline}\label{sec:6.3.2}
+
+A medição no pipeline executa um programa que lê o contador de ciclos, executa a instrução de sincronização e lê o contador novamente. Como a janela medida inclui as próprias instruções de leitura, um segundo programa idêntico, com uma instrução vazia no lugar da sincronização, calibra esse custo e é subtraído. Cabe ainda um segundo cuidado: o custo marginal por linha suja é isolado pela diferença entre execuções com números distintos de linhas sujas, de modo que a conclusão não dependa da calibração.
+
+A \refTab{tab:6.6} apresenta os resultados, com o custo no pipeline, o custo correspondente na cache isolada e a diferença entre os dois.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2100}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2100}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2300}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.1700}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.1800}}@{}}
+\caption[Custo da sincronização no pipeline, em ciclos, por latência e número de linhas sujas]{Custo da sincronização no pipeline, em ciclos, por latência e número de linhas sujas (Fonte: autoria própria, a partir da execução de 23 de novembro de 2026)}\label{tab:6.6}\\
+\hline
+\textbf{Latência} & \textbf{Linhas sujas} & \textbf{Custo no pipeline} & \textbf{Custo na cache} & \textbf{Overhead} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Latência} & \textbf{Linhas sujas} & \textbf{Custo no pipeline} & \textbf{Custo na cache} & \textbf{Overhead} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+0 & 0 & 26 & 20 & 6 \\
+0 & 1 & 28 & 22 & 6 \\
+0 & 2 & 30 & 24 & 6 \\
+0 & 64 & 154 & 148 & 6 \\
+1 & 0 & 27 & 20 & 7 \\
+1 & 1 & 30 & 23 & 7 \\
+1 & 2 & 33 & 26 & 7 \\
+1 & 64 & 219 & 212 & 7 \\
+3 & 0 & 29 & 20 & 9 \\
+3 & 1 & 34 & 25 & 9 \\
+3 & 2 & 39 & 30 & 9 \\
+3 & 64 & 349 & 340 & 9 \\
+6 & 0 & 32 & 20 & 12 \\
+6 & 1 & 40 & 28 & 12 \\
+6 & 2 & 48 & 36 & 12 \\
+6 & 64 & 544 & 532 & 12 \\
+\end{longtable}
+}
+
+A diferença entre o custo no pipeline e o custo na cache isolada é constante em L + 6 ciclos e não depende do número de linhas sujas: vale 6, 7, 9 e 12 para latências zero, um, três e seis, tanto com nenhuma quanto com sessenta e quatro linhas sujas. Essa constância admite uma interpretação que se apoia na \refTab{tab:4.8}. Depois da invalidação, a cache de instruções está integralmente vazia, e a primeira busca que incide sobre cada bloco é uma falta compulsória, cujo custo é L + 4 ciclos. Somados dois ciclos de encerramento das duas máquinas, chega-se a L + 6. O overhead do pipeline equivale, portanto, ao custo de uma falta limpa mais dois ciclos. Trata-se de interpretação consistente com todas as medições, e não de uma decomposição observada diretamente.
+
+O custo marginal por linha suja, isolado pela diferença entre execuções, é de 2, 3, 5 e 8 ciclos para latências zero, um, três e seis, isto é, L + 2, o mesmo valor obtido na cache isolada. A convergência entre os dois níveis de medição reforça a interpretação de que o custo do pipeline é a soma do custo da drenagem com um termo fixo de retomada.
+
+\subsection{Consequências para a geometria}\label{sec:6.3.3}
+
+Um resultado da medição não se refere à sincronização em si, mas à parametrização, e merece registro porque contraria a direção das demais conclusões deste capítulo. A varredura percorre todos os conjuntos, e não apenas os que contêm linhas sujas. Em consequência, uma cache maior paga mais por sincronização mesmo quando não há nada a gravar: vinte ciclos na configuração de 1 KiB contra 132 na de 8 KiB, com zero linhas sujas, o que corresponde a um acréscimo de 112 ciclos.
+
+O efeito precisa ser lido na escala certa. Diante do pior caso de 2.692 ciclos, 112 ciclos adicionais representam cerca de 4\% do total. Diante do caso em que a cache está limpa e a sincronização apenas varre, representam mais de seis vezes o custo. Como a instrução é rara e concentrada em carregamento de código e em código automodificável, o impacto agregado é pequeno; mas o resultado estabelece que a geometria adotada, que a seção~\ref{sec:6.7} justificou por saturação da taxa de acerto, tem um custo próprio na operação de consistência, e esse custo cresce com a capacidade.
+
+\section{Resultados da verificação funcional}\label{sec:6.4}
+
+A execução de referência aprovou a totalidade dos casos executados. Nenhuma suíte apresentou reprovação, e o único caso não aprovado foi o já mencionado teste de programa em hexadecimal, cancelado por ausência da variável de ambiente que fornece o arquivo.
+
+O resultado agregado precisa ser lido com a cautela que a seção~\ref{sec:2.6} impôs. Um conjunto de bancadas que executa sem erros não constitui prova de correção, porque a ausência de mensagem de erro é compatível tanto com um projeto correto quanto com uma bancada que não verifica nada. O que sustenta a afirmação de que esses casos verificam algo é o desenho descrito na seção~\ref{sec:6.2}: cada caso compara a resposta obtida com uma resposta esperada calculada independentemente, e os casos de varredura comparam não apenas os dados, mas os contadores, contra um modelo de referência escrito em Scala. É essa reconvergência, e não o número de casos aprovados, que dá sentido ao resultado.
+
+Vale registrar o que o conjunto não cobre, porque é o tipo de omissão que a leitura externa identifica. Não há caso que exercite a política aleatória contra modelo, conforme observado, e não há caso que verifique a sinalização de falha da sincronização no coordenador. As duas lacunas decorrem de a política aleatória e o caminho de falha da drenagem serem os dois pontos do subsistema em que o comportamento é determinístico mas não trivial de especificar independentemente.
+
+\section{Metodologia de medição}\label{sec:6.5}
+
+Cada cache dispõe de seis contadores de sessenta e quatro bits, agrupados em um agregado e expostos pelo coordenador ao pipeline. Uma entrada de limpeza zera todos simultaneamente, o que permite delimitar a janela de medição sem reiniciar a simulação. Os contadores são espelhados em registradores de controle e status numerados de três a doze na faixa de contadores de desempenho, em modo somente leitura, com escritas ignoradas, conforme a especificação da arquitetura para esses registradores, ao lado dos contadores de ciclos e de instruções aposentadas. A \refTab{tab:6.7} descreve cada um.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2226}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.2226}}>{\raggedright\arraybackslash}p{(\textwidth - 4\tabcolsep) * \real{0.5548}}@{}}
+\caption[Contadores de desempenho, respectivo registrador e definição]{Contadores de desempenho, respectivo registrador e definição (Fonte: autoria própria)}\label{tab:6.7}\\
+\hline
+\textbf{Contador} & \textbf{Registrador} & \textbf{O que conta} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Contador} & \textbf{Registrador} & \textbf{O que conta} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+acertos & 3 (instruções), 6 (dados) & pedidos atendidos por acerto, excluído o ciclo posterior ao preenchimento \\
+faltas & 4 (instruções), 7 (dados) & pedidos que falharam; o pedido refeito após uma falha conta nova falta \\
+ciclos de falta & 5 (instruções), 8 (dados) & ciclos gastos no tratamento da falta \\
+despejos & 9 (dados) & linhas sujas gravadas por substituição \\
+despejos de drenagem & 10 (dados) & linhas sujas gravadas pela sincronização, contadas à parte \\
+falhas & 11 (instruções), 12 (dados) & preenchimentos recusados pela memória \\
+\end{longtable}
+}
+
+Duas grandezas da tabela exigem cuidado de leitura. Os ciclos até o acerto são contados pelo próprio teste, que avança o relógio e conta as transições; os ciclos de falta vêm do contador, que a máquina de estados incrementa apenas nos estados de tratamento. São unidades medidas em pontos diferentes do circuito e não devem ser somadas sem essa ressalva.
+
+Os contadores são verificados em três níveis: na cache isolada, nas saídas do coordenador e nos registradores de controle e status lidos pelo pipeline. Cabe notar que apenas três desses contadores são lidos pela via dos registradores no teste de integração; os demais são verificados na porta da cache ou nas saídas do coordenador. A asserção de que o espelhamento funciona é, portanto, verificada por amostragem, e não para todos os seis em todos os níveis.
+
+A varredura de geometria, que produz os números da seção~\ref{sec:6.6}, tem parâmetros que precisam ser declarados, porque deles depende a interpretação dos resultados. Cada configuração é uma cache de dados isolada, sobre uma memória de trinta e dois kibibytes com latência zero, variando um eixo por vez a partir da configuração de base. O trace é único e fixo: semente quarenta e dois, mil e quinhentos acessos, área de endereçamento de vinte e quatro kibibytes, rajadas de uma a quatro palavras, vinte e cinco por cento de escritas, com sessenta por cento das rajadas concentradas em uma região quente de quatro kibibytes, vinte e cinco por cento em uma região morna de doze kibibytes e quinze por cento distribuídos pela área total.
+
+O teste impõe duas condições que dão credibilidade aos números. A primeira é que a soma de acertos e faltas seja igual ao número de acessos, o que detecta qualquer erro de contagem. A segunda é que acertos, faltas e despejos coincidam com o modelo de referência para as políticas LRU e FIFO, nas treze configurações. É essa segunda condição que faz dos números medidos um resultado verificado, e não apenas registrado.
+
+\section{Taxa de acerto e de falta por configuração}\label{sec:6.6}
+
+Os resultados da varredura se distribuem em quatro eixos. As Tabelas~\ref{tab:6.8} e~\ref{tab:6.9} apresentam os dois eixos com efeito mensurável; os outros dois são comentados em seguida.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1786}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1419}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1319}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1319}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1319}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1419}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1419}}@{}}
+\caption[Taxa de acerto e de falta no eixo de capacidade, com quatro vias, linha de dezesseis bytes e LRU]{Taxa de acerto e de falta no eixo de capacidade, com quatro vias, linha de dezesseis bytes e LRU (Fonte: autoria própria, a partir da execução de 23 de novembro de 2026)}\label{tab:6.8}\\
+\hline
+\textbf{Capacidade} & \textbf{Conjuntos} & \textbf{Acertos} & \textbf{Faltas} & \textbf{Despejos} & \textbf{Taxa de acerto} & \textbf{Taxa de falta} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Capacidade} & \textbf{Conjuntos} & \textbf{Acertos} & \textbf{Faltas} & \textbf{Despejos} & \textbf{Taxa de acerto} & \textbf{Taxa de falta} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+1 KiB & 16 & 778 & 722 & 261 & 51,9\% & 48,1\% \\
+2 KiB & 32 & 873 & 627 & 207 & 58,2\% & 41,8\% \\
+4 KiB & 64 & 981 & 519 & 126 & 65,4\% & 34,6\% \\
+8 KiB & 128 & 1.043 & 457 & 16 & 69,5\% & 30,5\% \\
+16 KiB & 256 & 1.044 & 456 & 1 & 69,6\% & 30,4\% \\
+\end{longtable}
+}
+
+A \refFig{fig:6.2} representa esses mesmos dados em forma de curva, e evidencia a saturação entre 4 KiB e 8 KiB.
+
+\figuraFonte[!ht]{figura_6_2}{Taxa de acerto em função da capacidade da cache, com quatro vias, linha de dezesseis bytes e LRU}{autoria própria, a partir da execução de 23 de novembro de 2026}{fig:6.2}{width=0.85\textwidth}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1786}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1419}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1319}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1319}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1319}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1419}}>{\raggedright\arraybackslash}p{(\textwidth - 12\tabcolsep) * \real{0.1419}}@{}}
+\caption[Taxa de acerto e de falta no eixo de tamanho de linha, com oito kibibytes, quatro vias e LRU]{Taxa de acerto e de falta no eixo de tamanho de linha, com oito kibibytes, quatro vias e LRU (Fonte: autoria própria, a partir da execução de 23 de novembro de 2026)}\label{tab:6.9}\\
+\hline
+\textbf{Linha} & \textbf{Conjuntos} & \textbf{Acertos} & \textbf{Faltas} & \textbf{Despejos} & \textbf{Taxa de acerto} & \textbf{Taxa de falta} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Linha} & \textbf{Conjuntos} & \textbf{Acertos} & \textbf{Faltas} & \textbf{Despejos} & \textbf{Taxa de acerto} & \textbf{Taxa de falta} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+8 B & 256 & 799 & 701 & 6 & 53,3\% & 46,7\% \\
+16 B & 128 & 1.043 & 457 & 16 & 69,5\% & 30,5\% \\
+32 B & 64 & 1.173 & 327 & 41 & 78,2\% & 21,8\% \\
+64 B & 32 & 1.263 & 237 & 63 & 84,2\% & 15,8\% \\
+\end{longtable}
+}
+
+No eixo de associatividade, mantidos oito kibibytes, linha de dezesseis bytes e LRU, a taxa de acerto é de 67,2\% com uma via, 68,9\% com duas, 69,5\% com quatro e 69,6\% com oito. No eixo de política, mantidos oito kibibytes, quatro vias e linha de dezesseis bytes, a taxa é de 69,5\% com LRU, 69,3\% com escolha aleatória e 69,0\% com FIFO.
+
+\section{Análise dos resultados}\label{sec:6.7}
+
+O primeiro resultado a destacar é que os eixos de capacidade e de associatividade saturam exatamente na configuração adotada no projeto. Na capacidade, os incrementos sucessivos são de 6,3, 7,2, 4,1 e 0,1 ponto percentual; dobrar de oito para dezesseis kibibytes rende um único acerto adicional em mil e quinhentos acessos. Na associatividade, os incrementos são de 1,7, 0,6 e 0,1 ponto. Dobrar de quatro para oito vias rende igualmente um acerto.
+
+Esse resultado tem uma consequência para o \refCap{4_Especificacao}. A justificativa da geometria na seção~\ref{sec:4.2} se apoiava em dados de síntese de terceiros, que indicavam o custo em área de cada parâmetro, mas não no comportamento do subsistema sob carga. A varredura fornece o complemento que faltava: dentro da faixa avaliada e sob este trace, 8 KiB e 4 vias estão no ponto em que o ganho marginal já se anulou, de modo que o custo adicional de 16 KiB ou de 8 vias não se traduziria em acerto.
+
+Há um segundo efeito, mais informativo que a taxa de acerto, e que a leitura apressada do eixo de capacidade não revela. O número de despejos cai de 261 para 16 entre 1 e 8 KiB, e para 1 em 16 KiB. Traduzido em tráfego, isso significa que a cache de base já captura quase todas as linhas que seriam despejadas sujas. Dessa forma, o argumento a favor da configuração adotada não é apenas que ela acerta tanto quanto uma maior, mas que ela já elimina praticamente todo o tráfego de despejo que uma cache menor produziria, e o tráfego de despejo é justamente o que a política de escrita de volta torna caro, conforme a seção~\ref{sec:2.5.3}.
+
+O eixo de tamanho de linha produz o resultado de maior amplitude, e é o único em que a configuração adotada não é a melhor. A taxa de acerto cresce de 53,3\% com oito bytes para 84,2\% com sessenta e quatro bytes, e a linha de sessenta e quatro supera a de dezesseis em 14,7 pontos percentuais, com 220 faltas a menos.
+
+Lido apenas pela taxa de acerto, esse resultado condenaria a escolha da seção~\ref{sec:4.2}. Lido em bytes transferidos, inverte. O tráfego total, soma do que entra por preenchimento e do que sai por despejo, é de 5.656 bytes com linha de oito, 7.568 com dezesseis, 11.776 com trinta e dois e 19.200 com sessenta e quatro. A linha de sessenta e quatro bytes move 2,5 vezes mais bytes que a de dezesseis para evitar 220 faltas.
+
+A comparação dos despejos exige uma ressalva metodológica que vale explicitar, porque é onde a leitura numérica mais engana. Em número de ocorrências, os despejos crescem de 6 para 63 ao longo do eixo; em bytes, crescem de 48 para 4.032. Comparar ocorrências entre configurações de linha diferente mede a granularidade da transferência, não o custo. Toda a análise de tráfego deste capítulo é feita em bytes por essa razão.
+
+A leitura conjunta dos dois eixos sustenta a seguinte conclusão sobre a configuração adotada. Ela não maximiza a taxa de acerto, e não poderia: a linha de sessenta e quatro bytes acerta 14,7 pontos mais. Ela minimiza o tráfego dentro da faixa de acerto aceitável, e essa é uma escolha de projeto coerente com um núcleo cujo objetivo é executar um sistema operacional sobre uma memória simulada de largura de banda fixa. Um sistema em que cada transferência custa o mesmo tempo, qualquer que seja o seu tamanho, favoreceria a linha maior; um sistema em que a transferência é proporcional ao volume transferido favorece a menor. A seção~\ref{sec:6.8} retoma essa distinção.
+
+O eixo de política confirma a ordenação prevista na seção~\ref{sec:2.5.4}, com a LRU à frente da escolha aleatória, que por sua vez fica à frente da FIFO, mas com margem pequena. A diferença entre a primeira e a última é de oito acertos em mil e quinhentos acessos, ou 0,5 ponto percentual. Um resultado dessa magnitude não sustenta a afirmação de superioridade de taxa de acerto que a seção~\ref{sec:2.5.4} faz ao justificar a LRU, e essa passagem precisa ser lida com essa ressalva: o que os dados sustentam é que a ordenação prevista se confirma e que a magnitude é pequena sob esta carga, de modo que a previsibilidade e a testabilidade permanecem como justificativas mais robustas que o ganho de acerto. Cabe notar ainda que uma diferença de oito acertos em mil e quinhentos não é estatisticamente distinguível de ruído, o que reforça a leitura de que a política é o parâmetro de menor impacto entre os quatro.
+
+Por fim, a explicação dos números remete ao trace. A saturação da capacidade em oito kibibytes se entende pela distribuição declarada: sessenta por cento das rajadas incidem sobre quatro kibibytes, que cabem com folga em uma cache de oito com quatro vias, de modo que a região quente permanece residente. Os quarenta por cento restantes se espalham por vinte kibibytes, e é essa parcela que produz as faltas remanescentes; aumentar a cache para dezesseis não resolve, porque o conjunto de trabalho total é de vinte e quatro. O comportamento do eixo de linha também decorre do trace: rajadas de uma a quatro palavras, ou seja, de quatro a dezesseis bytes, são integralmente cobertas por uma linha de dezesseis, mas quatro rajadas consecutivas o seriam por uma linha de sessenta e quatro, o que explica o ganho de acerto e, simultaneamente, o aumento de tráfego.
+
+\section{Limitações da avaliação}\label{sec:6.8}
+
+Cinco limitações delimitam o alcance dos números apresentados.
+
+A primeira é a natureza do trace. Ele é sintético e construído para exibir localidade espacial e temporal: sessenta por cento das rajadas em quatro kibibytes, rajadas sequenciais, vinte e cinco por cento de escritas. Os resultados valem para esse padrão, e não para um programa real. Um trace com predomínio de saltos inverteria a conclusão do eixo de linha, porque linhas maiores passariam a trazer dados que nunca seriam usados. Assim, a curva da seção~\ref{sec:6.6} é uma curva de sensibilidade a parâmetros sob uma carga declarada, e não uma previsão de desempenho.
+
+A segunda é o objeto medido. Cada configuração da varredura é uma cache de dados isolada, sobre memória de latência zero. O primeiro nível completo tem duas caches, com arbitragem entre elas, e o custo de falta depende da latência, que aqui é nula. Dessa maneira, os números medem o efeito da geometria sobre a taxa de acerto, e não o custo em ciclos do subsistema em operação em um sistema real.
+
+A terceira é o tamanho da amostra. Mil e quinhentos acessos são suficientes para curvas com diferenças de vários pontos percentuais, como as dos eixos de capacidade e de linha, e insuficientes para os eixos em que a diferença é de poucos acertos, como o de política e o trecho saturado do de associatividade. Nesses casos o resultado indica ordem de grandeza, não distinção.
+
+A quarta é o escopo das medições. Não há comparação entre execução com e sem cache para um mesmo programa, porque o pipeline não dispõe de configuração de contorno das caches, de modo que este capítulo não reporta ganho de desempenho em ciclos, e sim o custo de cada evento da cache e o efeito da geometria sobre a taxa de acerto. E não há síntese lógica, de modo que área e frequência máxima de operação não são quantificadas, e a discussão de custo em recursos da seção~\ref{sec:2.5.1} permanece analítica. O custo da instrução de sincronização foi medido, mas sob três restrições que delimitam o alcance dos números das seções~\ref{sec:6.3.1} a~\ref{sec:6.3.3}: a memória do modelo tem latência fixa, sem contenção e sem o comportamento de uma memória dinâmica real, de modo que os valores são em ciclos de relógio e não em tempo; o caso com a cache integralmente suja é um pior caso construído, e não um padrão de uso; e o custo no pipeline foi medido para um programa específico, com variações de alinhamento da instrução seguinte deslocando o termo fixo em poucos ciclos.
+
+A quinta limitação é a independência entre projeto e verificação. Conforme a seção~\ref{sec:2.6} estabeleceu, a autoria do subsistema e da sua verificação é a mesma pessoa, e a forma de independência disponível é entre representações, porque o modelo de referência é uma segunda descrição da especificação, em Scala, e não uma cópia do código em Chisel. É uma independência mais fraca do que a redundância entre agentes que a literatura prescreve, e reduz o risco sem eliminá-lo.

@@ -1,0 +1,64 @@
+Este capítulo situa o trabalho em relação a três grupos de referências, e não a uma lista exaustiva de implementações de cache. O critério de seleção decorre do que a Seção~\ref{sec:2.5} estabeleceu: se a escolha de parâmetros não tem ótimo universal, então o que se pode comparar entre trabalhos não é o valor escolhido, mas o critério com que cada um o escolheu. Por isso, foram selecionados um trabalho que fornece a arquitetura de referência e os valores de partida; um que representa o estado da arte em subsistemas de cache L1 de código aberto; e um que fornece a metodologia e os dados quantitativos de compromisso entre parâmetros.
+
+\section{CVA6: a arquitetura de referência}\label{sec:3.1}
+
+O CVA6 é um núcleo RISC-V de classe de aplicação, capaz de executar Linux, originalmente descrito em Chisel sob o nome Ariane e posteriormente adotado e mantido pela OpenHW Group~\cite{zaruba2019cost}. Sua organização é de seis estágios em ordem, com emissão única e sem execução especulativa fora de ordem, e o conjunto de instruções implementado é o RV64GC, com unidade de gerência de memória e tradução de endereços. A escolha desse núcleo como referência neste trabalho não é arbitrária: ele é o mesmo tipo de núcleo que o projeto coletivo em que esta monografia se insere pretende construir, e compartilha com ele a origem na linguagem Chisel.
+
+A organização da hierarquia de memória do CVA6 é do tipo Harvard no primeiro nível, com cache de instrução e cache de dados separadas. A cache de instrução tem 16 KiB, organizada em quatro vias, e a cache de dados tem 32 KiB, organizada em oito vias, ambas com linha de 16 bytes~\cite{zaruba2019cost}. Dessa configuração derivam 256 conjuntos em cada cache, o que é uma coincidência de projeto e não uma necessidade: o número de conjuntos é igual porque a capacidade maior da cache de dados é compensada pela associatividade também maior.
+
+Do CVA6 este trabalho importa três decisões e recusa uma. Importa a separação entre as duas caches, que é o que evita conflito estrutural entre a busca de instrução e o acesso a dado no mesmo ciclo, e que é a razão de a seção~\ref{sec:2.5.5} existir. Importa o tamanho de linha de 16 bytes, que a seção~\ref{sec:2.5.1} justificou pela curva de custo em área. E importa a política de escrita de volta com alocação na escrita, tratada na seção~\ref{sec:2.5.3}. Porém, recusa-se a capacidade, e essa recusa precisa ser declarada: enquanto o CVA6 adota 16 KiB e 32 KiB, o presente trabalho adota 8 KiB em cada cache, com quatro vias. A razão é o orçamento de recursos do dispositivo de destino e, sobretudo, o desenho experimental do \refCap{6_Verificacao}, que exige variar a capacidade ao longo de uma faixa que não caberia no dispositivo se a linha de base já fosse o valor do CVA6.
+
+Cabe ainda registrar uma diferença de natureza, que não é de valor mas de estrutura. No CVA6 a hierarquia de memória não constitui um subsistema isolável: ela está entrelaçada ao estágio de acesso à memória do pipeline, e sua parametrização é exposta por um pacote de configuração do núcleo, lido em conjunto com dezenas de outros parâmetros. Neste trabalho, ao contrário, o subsistema é delimitado por uma interface própria com o pipeline e pode ser instanciado, configurado e verificado isoladamente, o que é a condição para a avaliação experimental prevista.
+
+\section{HPDcache: o estado da arte em cache L1 de dados}\label{sec:3.2}
+
+A cache de dados de alto desempenho do ecossistema RISC-V, designada HPDcache, foi integrada ao CVA6 e apresentada em 2024 como resposta ao que seus autores descrevem como o gargalo do subsistema de memória dos processadores RISC-V de código aberto recentes~\cite{million2024hpdcache}. O resultado reportado é um ganho de até 234\% em benchmarks selecionados, com impacto de área de 5,92\%~\cite{million2024hpdcache}. A relevância dessa referência para o presente trabalho é que ela fixa o que significa, hoje, um subsistema de cache L1 competitivo.
+
+A arquitetura do HPDcache é de escrita de volta, não bloqueante, com registro de faltas múltiplas em voo, o que lhe permite continuar atendendo requisições enquanto uma falta é resolvida. É precisamente nesse ponto que este trabalho se diferencia, e a diferenciação é de escopo, não de qualidade. Como o processador em desenvolvimento é de núcleo único, em ordem e sem execução especulativa, o ganho de suportar faltas simultâneas é pequeno diante da complexidade adicional de projetar e verificar os mecanismos de rastreamento de faltas que uma cache não bloqueante exige. Assim, a decisão adotada foi manter a política de escrita de volta com alocação, que é a do HPDcache, e recusar a não bloqueante, mantendo o controlador bloqueante descrito no \refCap{4_Especificacao}. Dessa combinação resulta uma configuração que não é a de nenhum dos trabalhos de referência, e que é coerente com o recorte delimitado na Seção~\ref{sec:1.2}.
+
+Há uma distinção que convém explicitar, porque é fonte comum de confusão na literatura. A cache de dados do CVA6 clássico, anterior à integração do HPDcache, opera em escrita direta, e a integração do HPDcache é que introduz a escrita de volta como opção~\cite{million2024hpdcache}. Quando se afirma que o CVA6 emprega escrita de volta, a afirmação é verdadeira apenas para a configuração que inclui o HPDcache; a arquitetura original não a adota. Este trabalho segue a segunda, e essa é a razão de a seção~\ref{sec:2.5.3} ter justificado a escolha pela ausência de nível inferior, e não pela autoridade da referência.
+
+\section{BRISC-V: exploração do espaço de projeto}\label{sec:3.3}
+
+O BRISC-V é uma caixa de ferramentas de código aberto para exploração do espaço de projeto de arquiteturas baseadas em RISC-V, desenvolvida na Universidade de Boston e publicada em 2019~\cite{bandara2019briscv}. Seus módulos são descritos em Verilog sintetizável e parametrizado, sem blocos específicos de fabricante, e o conjunto abrange núcleos, subsistema de cache e rede em chip, permitindo explorar organizações de memória em múltiplos níveis e diferentes topologias de sistema~\cite{bandara2019briscv}. A ferramenta admite tanto simulação em nível de transferência entre registradores quanto emulação em arranjo de portas programáveis, e inclui um ambiente gráfico que permite escolher parâmetros e visualizar o sistema resultante.
+
+A contribuição do BRISC-V para este trabalho não é de arquitetura, mas de método e de dado. Seus autores medem, para dezenas de configurações sintetizadas em FPGA\glsadd{FPGA}, o número de elementos lógicos, o uso de memória em blocos e a frequência máxima de operação, o que permite observar a forma das curvas de compromisso em vez de apenas o ponto escolhido. É esse conjunto de dados que sustenta quantitativamente as escolhas da seção~\ref{sec:2.5.1}, e vale registrar o que ele mostra em cada eixo.
+
+No eixo da capacidade, mantidos quatro vias e linha de 16 bytes, os elementos lógicos e a frequência máxima permanecem praticamente constantes de 1 KiB a 16 KiB, enquanto a memória em blocos cresce proporcionalmente. Dessa forma, o custo de aumentar a cache recai quase exclusivamente sobre a memória, e não sobre a lógica nem sobre a velocidade, o que sustenta a decisão de tratar a capacidade como parâmetro de varredura sem receio de degradar o caminho crítico.
+
+No eixo da associatividade, mantidos 4 KiB e linha de 16 bytes, o comportamento é oposto. O número de elementos lógicos cresce de cerca de 2.387 em mapeamento direto para cerca de 6.546 em dezesseis vias, e a frequência máxima cai de 104 MHz para 49 MHz no mesmo intervalo. É o parâmetro mais caro dos três, e a queda só se torna crítica acima de oito vias, o que situa a escolha de quatro vias no trecho ainda administrável da curva.
+
+No eixo do tamanho de linha, mantidos 4 KiB e quatro vias, os elementos lógicos crescem de cerca de 1.663 com linha de 4 bytes para cerca de 8.888 com linha de 64 bytes, ao passo que a frequência máxima só sofre redução visível na linha de 64 bytes. A linha de 16 bytes fica, assim, no início da curva de custo, e não no seu meio.
+
+Duas ressalvas acompanham esses números. A primeira é que foram obtidos em um dispositivo específico e com um núcleo específico, de modo que os valores absolutos não são transferíveis; o que se transfere é a direção e a ordem de grandeza relativa entre os eixos. A segunda é que a parametrização do BRISC-V é feita por parâmetros de módulo em Verilog, o que permite gerar configurações distintas, mas não permite que a escolha de política de reposição seja resolvida em tempo de elaboração da forma como o Chisel o permite, conforme discutido na seção~\ref{sec:2.2}. Essa é uma diferença de capacidade da linguagem, e não de método, e é onde este trabalho se apoia no Chisel para ir além do que a ferramenta de referência faz.
+
+\section{Síntese comparativa e posicionamento}\label{sec:3.4}
+
+A comparação entre os três trabalhos e o presente pode ser feita pelos eixos que a seção~\ref{sec:2.5.1} isolou, e o resultado é o que a \refTab{tab:3.1} resume.
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2100}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2100}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.2300}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.1700}}>{\raggedright\arraybackslash}p{(\textwidth - 8\tabcolsep) * \real{0.1800}}@{}}
+\caption[Comparação entre os trabalhos de referência e o presente trabalho]{Comparação entre os trabalhos de referência e o presente trabalho (Fonte: elaborada pela autora a partir de {[}9{]}, {[}10{]} e {[}11{]})}\label{tab:3.1}\\
+\hline
+\textbf{Aspecto} & \textbf{CVA6~\cite{zaruba2019cost}} & \textbf{HPDcache~\cite{million2024hpdcache}} & \textbf{BRISC-V~\cite{bandara2019briscv}} & \textbf{Este trabalho} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Aspecto} & \textbf{CVA6~\cite{zaruba2019cost}} & \textbf{HPDcache~\cite{million2024hpdcache}} & \textbf{BRISC-V~\cite{bandara2019briscv}} & \textbf{Este trabalho} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+Linguagem & Chisel, depois SystemVerilog & SystemVerilog & Verilog parametrizado & Chisel \\
+Organização L1 & Harvard & apenas cache de dados & configurável & Harvard \\
+Capacidade & 16 KiB e 32 KiB & configurável & configurável & 8 KiB por cache \\
+Associatividade & 4 e 8 vias & configurável & configurável & 4 vias, parametrizada \\
+Política de escrita & escrita direta; escrita de volta com HPDcache & escrita de volta & configurável & escrita de volta com alocação \\
+Concorrência & bloqueante; não bloqueante com HPDcache & não bloqueante, com faltas em voo & configurável & bloqueante \\
+Consistência I/D & mecanismo próprio do núcleo & não se aplica & não se aplica & FENCE.I explícita \\
+\end{longtable}
+}
+
+A leitura da tabela permite enunciar a lacuna com precisão. Nenhum dos três trabalhos oferece, simultaneamente, quatro propriedades que este trabalho reúne. A primeira é a descrição em Chisel de um subsistema de cache completo, com a geometria exposta como argumento do gerador e a política de reposição resolvida em tempo de elaboração, o que nenhum dos três faz: o CVA6 expõe a configuração por um pacote de parâmetros do núcleo, o HPDcache é descrito em SystemVerilog e o BRISC-V em Verilog parametrizado. A segunda é o isolamento do subsistema como unidade verificável, com interface própria com o pipeline, o que no CVA6 não ocorre e nos demais não se aplica. A terceira é a combinação específica de escrita de volta com alocação e controlador bloqueante, que não é a de nenhum deles. A quarta é o tratamento da consistência entre os fluxos de instrução e de dados como obrigação explícita, verificável e ordenada, e não como detalhe interno de um núcleo maior.
+
+Cabe declarar também o que este trabalho não pretende. Ele não compete em desempenho com o HPDcache, cujo ganho reportado decorre de mecanismos que aqui foram deliberadamente excluídos do escopo. Não pretende reproduzir o CVA6, do qual adota a organização e recusa a capacidade. E não pretende substituir o BRISC-V como ferramenta de exploração, uma vez que cobre um único núcleo enquanto aquele cobre famílias de sistemas. O que ele pretende é ocupar uma posição que os três deixam vaga: a de um subsistema de cache L1 parametrizado, escrito em Chisel, delimitado por interface própria e acompanhado de um ambiente de verificação automatizada que permita relacionar cada escolha de parâmetro ao seu efeito medido, em um núcleo capaz de executar Linux. É essa lacuna, e não uma diferença de valores, que o \refCap{4_Especificacao} começa a preencher.
