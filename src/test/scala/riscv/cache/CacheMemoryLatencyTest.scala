@@ -3,6 +3,8 @@ package riscv.cache
 import chisel3._
 import chiseltest._
 import org.scalatest.flatspec.AnyFlatSpec
+import java.io.{File, PrintWriter}
+import scala.collection.mutable
 import scala.util.Random
 
 /** DUT de integracao: L1Cache (ICache + DCache) ligada a uma CacheMainMemory
@@ -19,6 +21,7 @@ class L1WithMemory(
     val dCache = Flipped(new CpuCacheIO)
     val fenceI = Input(Bool())
     val fenceIDone = Output(Bool())
+    val dPerf = Output(new CachePerf) // contadores da DCache (flushWriteBacks)
   })
 
   val l1 = Module(new L1Cache(cfg))
@@ -33,6 +36,7 @@ class L1WithMemory(
   l1.io.dCache <> io.dCache
   l1.io.fenceI := io.fenceI
   io.fenceIDone := l1.io.fenceIDone
+  io.dPerf := l1.io.dPerf
 }
 
 /** Testes de estresse da memoria principal: ready demorando varios ciclos,
@@ -332,7 +336,7 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
     dut.io.fenceI.poke(true.B)
     var c = 0
     while (!dut.io.fenceIDone.peek().litToBoolean) {
-      require(c < 2000, "timeout: FENCE.I travado")
+      require(c < 20000, "timeout: FENCE.I travado")
       dut.clock.step(1)
       c += 1
     }
@@ -410,6 +414,9 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
             assert(
               cycles >= latency,
               s"FENCE.I terminou em $cycles ciclos, antes da latencia"
+            )
+            println(
+              s"[fence.i] latencia=$latency, 2 linhas sujas: $cycles ciclos"
             )
 
             assert(fetch(dut, 0x44).data == BigInt(0xcafe0001L))
@@ -513,5 +520,110 @@ class CacheMemoryLatencyTest extends AnyFlatSpec with ChiselScalatestTester {
         }
       }
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Parte 3: custo do FENCE.I (latencia x numero de linhas sujas)
+  // ------------------------------------------------------------------
+  // Previsao (derivada da FSM; os testes abaixo a conferem):
+  //
+  //   ciclos = numSets + FenceFixed + sujas * (latencia + 2)
+  //
+  //   - a varredura gasta 1 ciclo por conjunto (numSets);
+  //   - cada linha suja acrescenta 1 ciclo de varredura (o que a encontra) e
+  //     latencia + 1 ciclos no estado de write-back: (latencia + 1) + 1;
+  //   - FenceFixed = 4 ciclos de handshake, contados de `fenceI = 1` ate
+  //     `fenceIDone`: 1 (L1: Idle -> FlushData) + 1 (Cache: Idle -> FlushScan)
+  //     + 2 (L1: FlushData -> InvalidateInstruction -> Complete).
+  private val FenceFixed = 4
+  private val FenceLatencies = Seq(0, 1, 3, 6)
+
+  private def fencePredicted(cfg: CacheConfig, latency: Int, dirty: Int): Int =
+    cfg.numSets + FenceFixed + dirty * (latency + 2)
+
+  private case class FenceRow(
+      config: String,
+      numSets: Int,
+      latency: Int,
+      dirty: Int,
+      measured: Int,
+      predicted: Int
+  )
+  private val fenceRows = mutable.ListBuffer[FenceRow]()
+
+  /** Suja `dirty` linhas distintas (uma por linha de cache, sem despejo), mede
+    * o FENCE.I e confere (1) a previsao e (2) que o flush gravou `dirty`
+    * linhas.
+    */
+  private def measureFence(
+      dut: L1WithMemory,
+      cfg: CacheConfig,
+      latency: Int,
+      dirty: Int,
+      failures: mutable.ListBuffer[String]
+  ): Unit = {
+    resetSystem(dut)
+    for (i <- 0 until dirty)
+      store(dut, i.toLong * cfg.lineBytes, 0x1000L + i)
+    val cycles = fenceI(dut)
+    val written = dut.io.dPerf.flushWriteBacks.peekInt()
+    val predicted = fencePredicted(cfg, latency, dirty)
+    println(
+      f"[fence.i] ${cfg.label}%-20s latencia=$latency%d sujas=$dirty%3d medido=$cycles%5d previsto=$predicted%5d"
+    )
+    fenceRows += FenceRow(
+      cfg.label,
+      cfg.numSets,
+      latency,
+      dirty,
+      cycles,
+      predicted
+    )
+    if (written != BigInt(dirty))
+      failures += s"${cfg.label} L=$latency: flush gravou $written linhas, esperado $dirty"
+    if (cycles != predicted)
+      failures += s"${cfg.label} L=$latency sujas=$dirty: medido $cycles, previsto $predicted (dif ${cycles - predicted})"
+  }
+
+  for (latency <- FenceLatencies) {
+    it should s"medir o FENCE.I com 0, 1, 2 e todas as linhas sujas (latencia $latency)" in {
+      val failures = mutable.ListBuffer[String]()
+      test(newSystem(latency, SmallWords)) { dut =>
+        dut.clock.setTimeout(0) // flush longo: sem poke por >1000 ciclos
+        for (dirty <- Seq(0, 1, 2, TestCfg.numLines))
+          measureFence(dut, TestCfg, latency, dirty, failures)
+      }
+      assert(failures.isEmpty, failures.mkString("\n"))
+    }
+  }
+
+  it should "medir o FENCE.I na geometria padrao, com 128 conjuntos (latencia 3)" in {
+    val cfg = CacheConfig.default
+    val latency = 3
+    val failures = mutable.ListBuffer[String]()
+    // 8 KiB de memoria: cabem as 512 linhas da DCache sem despejo.
+    test(new L1WithMemory(latency, 2048, codeWords, cfg)) { dut =>
+      dut.clock.setTimeout(0) // a cache cheia leva ~2700 ciclos sem poke
+      for (dirty <- Seq(0, 1, 2, cfg.numLines))
+        measureFence(dut, cfg, latency, dirty, failures)
+    }
+    assert(failures.isEmpty, failures.mkString("\n"))
+  }
+
+  it should "gravar a medicao do FENCE.I em target/fence-i-cache.csv" in {
+    val file = new File("target/fence-i-cache.csv")
+    file.getParentFile.mkdirs()
+    val out = new PrintWriter(file)
+    try {
+      out.println(
+        "config,conjuntos,latencia,linhas_sujas,medido,previsto,diferenca"
+      )
+      fenceRows.foreach { r =>
+        out.println(
+          s"${r.config},${r.numSets},${r.latency},${r.dirty},${r.measured},${r.predicted},${r.measured - r.predicted}"
+        )
+      }
+    } finally out.close()
+    assert(file.exists())
   }
 }

@@ -268,6 +268,24 @@ Limites: `misa`, `mip` e `sip` existem e leem zero (escritas ignoradas); `sstatu
 - Os contadores das caches sao registrados no fim do ciclo do evento: uma leitura imediatamente apos o acesso que o gerou ainda nao o inclui (deixe 1 ou 2 instrucoes de folga).
 - Teste: `Pipeline3CounterSpec`.
 
+### Custo do FENCE.I
+
+Previsao, derivada da FSM do `L1Cache` e da `Cache`:
+
+```text
+ciclos = numSets + 4 + sujas * (latencia + 2)
+```
+
+- `numSets`: a varredura gasta 1 ciclo por conjunto (128 no padrao);
+- cada linha suja soma 1 ciclo de varredura (o que a encontra) e `latencia + 1` ciclos no write-back, ou seja `(latencia + 1) + 1` por linha;
+- `4`: handshake, de `fenceI = 1` ate `fenceIDone` (1 para o L1 entrar em `FlushData`, 1 para a `Cache` sair de `sIdle`, 2 para `InvalidateInstruction` e `Complete`). A formula `numSets + soma(L + 1 + 1)` sem esse termo fica 4 ciclos abaixo do medido.
+
+`CacheMemoryLatencyTest` mede a matriz latencia 0, 1, 3 e 6 por 0, 1, 2 e todas as linhas sujas (cache de 1 KiB, 16 conjuntos) e uma serie na geometria padrao (128 conjuntos), compara com a previsao e grava `target/fence-i-cache.csv`. `Pipeline3FenceICostSpec` le `mcycle` antes e depois de um `FENCE.I` e grava `target/fence-i-pipeline.csv`: o valor inclui a parada do pipeline e a busca da instrucao seguinte com a ICache vazia, e a inclinacao por linha suja (`latencia + 2`) tambem e conferida.
+
+```bash
+sbt "testOnly riscv.cache.CacheMemoryLatencyTest riscv.integration.pipeline.Pipeline3FenceICostSpec"
+```
+
 ## Pendencias conhecidas
 
 - `DIV`, `DIVU`, `REM` e `REMU` (extensao M so tem multiplicacao).
