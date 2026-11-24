@@ -31,13 +31,15 @@ O codigo de producao fica em `src/main/scala/riscv/`, um pacote por bloco funcio
 | `riscv.compressed` | `RvcDecompressor.scala`, `GenerateRvcDecompressorVerilog.scala` | Descompressor combinacional de instrucoes compactas (RVC) para RV32I de 32 bits e gerador do seu Verilog. |
 | `riscv.atomic` | `AmoAlu.scala`, `ReservationUnit.scala` | ALU dos `AMO*.W` (valor a gravar a partir do valor antigo e de `rs2`) e reserva de `LR.W`/`SC.W` (estabelece, consome e invalida a reserva). |
 | `riscv.cache` | `CacheParams.scala` (`CacheConfig`), `CacheIO.scala`, `CacheArrays.scala`, `CacheLru.scala` (interface comum e as politicas LRU, FIFO e aleatoria), `Cache.scala`, `L1Cache.scala`, `CacheMainMemory.scala` | Geometria parametrizavel e enderecamento (`CacheConfig`, `CacheParams`, `CacheAddress`), interfaces CPU-cache e cache-memoria, arrays de dados/tags, LRU, a FSM da cache (`Cache`), o `L1Cache` (ICache + DCache e coordenacao do `FENCE.I`), os contadores de desempenho (`CachePerf`) e a memoria principal simulada, compartilhada pelas duas caches, com latencia configuravel e canal de falha (`fault`). Ver a secao "Sistema de cache". |
-| `riscv.pipeline` | `InstructionFetch.scala`, `Pipeline3.scala` | Estagio de busca com RVC (pede palavras de 32 bits a ICache com handshake por `memoryReady`, guarda a ultima palavra num buffer, monta instrucoes de 32 bits que cruzam o limite de palavra, expande as de 16 bits e informa o tamanho, 2 ou 4 bytes, para avancar o PC); top-level do pipeline RV32I (com extensoes A e C e multiplicacao) em 3 estagios, integrando `InstructionFetch`, controlador, CSR/CLINT, `AmoAlu`, `ReservationUnit`, `L1Cache` e `CacheMainMemory`. Parametros do `Pipeline3`: `initialProgram`, `memoryWords` (tamanho da memoria principal, em palavras), `programFile` (hex carregado na memoria), `memoryLatency` (ciclos de resposta da memoria; 0 = combinacional) e `cacheConfig` (geometria e politica das caches). |
+| `riscv.pipeline` | `InstructionFetch.scala`, `Pipeline3.scala`, `GeneratePipeline3Verilog.scala` | Estagio de busca com RVC (pede palavras de 32 bits a ICache com handshake por `memoryReady`, guarda a ultima palavra num buffer, monta instrucoes de 32 bits que cruzam o limite de palavra, expande as de 16 bits e informa o tamanho, 2 ou 4 bytes, para avancar o PC); top-level do pipeline RV32I (com extensoes A e C e multiplicacao) em 3 estagios, integrando `InstructionFetch`, controlador, CSR/CLINT, `AmoAlu`, `ReservationUnit`, `L1Cache` e `CacheMainMemory`. Parametros do `Pipeline3`: `initialProgram`, `memoryWords` (tamanho da memoria principal, em palavras), `programFile` (hex carregado na memoria), `memoryLatency` (ciclos de resposta da memoria; 0 = combinacional) e `cacheConfig` (geometria e politica das caches). O gerador de Verilog esta descrito em "Gerar Verilog". |
 
 Testes (ScalaTest + chiseltest) em `src/test/scala/riscv/`:
 
 - `unit/`: blocos isolados, em subpastas que espelham os pacotes acima (`decode/`, `execute/`, `registers/`, `privileged/`, `compressed/`, `atomic/`).
 - `cache/`: arrays, LRU, FSM, caminho de acerto, latencia da memoria, canal de falha (`CacheFaultTest`), contadores (`CachePerfTest`), memoria principal e a varredura de geometria/politica (`CacheGeometryTest`).
 - `integration/`: pipeline completo. `pipeline/` (`Pipeline3MisalignedSpec`: traps de acesso desalinhado; `Pipeline3SlowMemorySpec`: memoria lenta; `Pipeline3CounterSpec`: `mcycle`/`minstret` e contadores das caches nos CSRs), `blackbox/rv32i/` (programas RV32I), `diagnostics/` (`Rv32iHexTraceSpec`, ver a secao de programas em hex) e `support/` (helpers compartilhados).
+
+`modelsim/`: testbench Verilog do `Pipeline3` (`tb_pipeline3.v`) e o script `run_icarus.sh` que gera o Verilog e simula (ver "Simular com Icarus Verilog e GTKWave").
 
 Outros arquivos: `build.sbt` (dependencias e configuracoes do build) e `.github/workflows/ci.yml` (CI).
 
@@ -139,27 +141,42 @@ ciclos para chegar (miss de ICache), entao use um valor generoso. Um exemplo pro
 
 ### Gerar Verilog
 
-Hoje existe um unico gerador, o do descompressor RVC:
+Dois geradores: o do descompressor RVC e o do `Pipeline3`.
 
 ```bash
 sbt "runMain riscv.compressed.GenerateRvcDecompressorVerilog"
 ```
 
-O Verilog sai em `output/decompressor/`. O gerador do `Pipeline3` e o fluxo com
-Icarus/GTKWave que existiam antes foram removidos (o pipeline agora busca instrucoes
-pela ICache, e nao mais por uma memoria de instrucoes propria). Para gerar o Verilog do
-`Pipeline3`, crie um `App` parecido com o do descompressor, por exemplo:
+O Verilog do descompressor sai em `output/decompressor/`.
 
-```scala
-(new ChiselStage).emitVerilog(
-  new Pipeline3(programFile = "generated/program.hex", memoryLatency = 0),
-  Array("--target-dir", "generated")
-)
+```bash
+sbt "runMain riscv.pipeline.GeneratePipeline3Verilog [programa.hex] [dirSaida] [memoryWords] [memoryLatency]"
 ```
 
-O `programFile` e carregado na memoria principal (`CacheMainMemory`) por
-`loadMemoryFromFileInline`; o simulador precisa de um testbench proprio, que nao esta
-no repositorio.
+Os padroes sao `src/test/resources/diagnostics/rv32i-add.hex`, `generated`, 1024 palavras e latencia 0. O programa segue o mesmo formato da secao anterior (uma palavra de 32 bits em hexadecimal por linha). O gerador:
+
+- copia o programa para `generated/program_padded.hex`, completando com zeros ate `memoryWords` linhas. Sem isso o `$readmemh` deixa o resto da memoria indefinido (X) e avisa `Not enough words in the file`;
+- carrega esse arquivo na memoria principal (`CacheMainMemory`) por `loadMemoryFromFileInline`; o caminho gravado no Verilog e absoluto, entao gere de novo se o projeto mudar de lugar;
+- escreve `generated/Pipeline3.v` (alem de `.fir` e `.anno.json`). A pasta `generated/` e ignorada pelo git.
+
+### Simular com Icarus Verilog e GTKWave
+
+Instale as ferramentas (`sudo apt install iverilog gtkwave`) e rode o fluxo completo:
+
+```bash
+modelsim/run_icarus.sh [programa.hex] [ciclos] [memoryWords] [memoryLatency]
+```
+
+O script gera o Verilog, compila com o testbench `modelsim/tb_pipeline3.v` e simula. Os passos manuais equivalentes sao:
+
+```bash
+sbt "runMain riscv.pipeline.GeneratePipeline3Verilog src/test/resources/diagnostics/rv32i-add.hex generated"
+iverilog -g2012 -o generated/pipeline3_sim.out generated/Pipeline3.v modelsim/tb_pipeline3.v
+vvp generated/pipeline3_sim.out +cycles=200
+gtkwave pipeline.vcd
+```
+
+O testbench (Verilog puro, tambem serve para o ModelSim) gera clock e reset, imprime cada escrita em registrador (`[ciclo N] pc=... xR <= valor`) e cada trap, grava as ondas em `pipeline.vcd` e, ao fim, imprime os contadores de hit/miss das caches. `+cycles=N` define o numero de ciclos (padrao 200). Com as caches frias cada instrucao leva varios ciclos (miss de ICache e latencia da memoria), entao use um valor generoso. O arquivo e versionado apesar de o `.gitignore` ignorar `*.v` (ha uma excecao para `modelsim/tb_pipeline3.v`).
 
 ## Fluxo recomendado no dia a dia
 
@@ -239,7 +256,7 @@ Limites: `misa`, `mip` e `sip` existem e leem zero (escritas ignoradas); `sstatu
 - **Geometria padrao:** L1 dividida em ICache e DCache, 8 KiB cada, 4 vias, linha de 16 B (4 palavras), reposicao LRU, write-back com write-allocate, controlador bloqueante. A premissa e que os 16 KiB do enunciado sao a soma das duas.
 - **Geometria e politica parametrizaveis** (`CacheConfig`): `capacityBytes`, `ways` (1 = mapeamento direto), `lineBytes` (potencia de 2, ao menos 8) e `policy` (`ReplacementPolicy.Lru`, `Fifo` ou `Random`). A mesma configuracao vale para a ICache e a DCache. Exemplo: `new Pipeline3(cacheConfig = CacheConfig(capacityBytes = 4096, ways = 2, lineBytes = 32, policy = ReplacementPolicy.Fifo))`. `CacheParams` continua existindo e e a geometria padrao (`CacheConfig.default`). Tamanhos devem ser potencias de 2 e o numero de conjuntos, ao menos 2.
 - **Politicas de substituicao:** so atuam com o conjunto cheio (vias invalidas sao preenchidas primeiro, da menor para a maior). LRU atualiza a cada acerto; FIFO avanca um ponteiro por conjunto a cada linha alocada (e o zera quando a ICache e invalidada); a aleatoria usa um LFSR de 16 bits sempre em marcha, determinista mas dependente do ciclo.
-- **Varredura para experimentos:** `CacheGeometryTest` roda, um eixo por vez e com a linha de base nos demais, capacidade 1/2/4/8/16 KiB, 1/2/4/8 vias, linhas de 8/16/32/64 B e as tres politicas. Todas as configuracoes rodam o mesmo trace (`CacheSweepTrace`: enderecos de byte fixos, semente fixa, independente da geometria), o que torna os quatro eixos comparaveis. Confere dados e contadores (LRU e FIFO) contra um modelo de referencia e grava os contadores e a taxa de acerto de cada configuracao em `target/cache-sweep.csv`, com a linha de base presente em todos os eixos: `sbt "testOnly riscv.cache.CacheGeometryTest riscv.cache.CacheSweepTraceTest"`. O `CacheSweepTraceTest` e a guarda de regressao (Scala puro, rapido): falha se duas geometrias distintas derem contadores identicos.
+- **Varredura para experimentos:** `CacheGeometryTest` roda, um eixo por vez e com a linha de base nos demais, capacidade 1/2/4/8/16 KiB, 1/2/4/8 vias, linhas de 8/16/32/64 B e as tres politicas. Confere dados e contadores (LRU e FIFO) contra um modelo de referencia e grava a taxa de acerto de cada configuracao em `target/cache-sweep.csv`: `sbt "testOnly riscv.cache.CacheGeometryTest"`.
 - **Contrato com a CPU:** enquanto `stall` esta alto, o pedido (`request`, `write`, `address`, ...) deve ficar estavel. Por isso o pipeline so desvia, trata trap ou termina `FENCE.I` quando nao ha espera de cache.
 - **Bit de sujeira so na DCache:** `CacheArrays(cfg, hasDirty)` so cria o registrador `dirtyBits` quando `hasDirty = true`; a ICache usa `hasDirty = false`, entao o armazenamento nao existe no circuito (a leitura de `dirty` e a constante 0 e `write.dirty` e ignorado). Teste: `CacheDirtyBitTest`.
 - **Coerencia:** ICache e DCache so se sincronizam por `FENCE.I` (grava as linhas dirty da DCache e invalida a ICache), como manda a especificacao.
