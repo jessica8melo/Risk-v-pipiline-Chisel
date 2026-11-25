@@ -27,6 +27,14 @@ import chisel3.util.experimental.loadMemoryFromFileInline
   * (palavra 0 = endereco 0). Assim, programa e dados ocupam o mesmo espaco de
   * enderecos. Para inicializacao por arquivo, cada linha do arquivo segue o
   * formato hex aceito por loadMemoryFromFileInline.
+  *
+  * `cfg.blockRam = true`: a memoria usa `SyncReadMem` com uma entrada por linha
+  * de cache (mapeia em blocos de RAM da FPGA) e exige `latency >= 1`. Nesse
+  * modo o `programFile` tem UMA LINHA DE CACHE por linha do arquivo
+  * (`wordsPerLine` palavras de 32 bits concatenadas, a palavra de menor
+  * endereco nos bits menos significativos, isto e, a mais a direita); o
+  * `GeneratePipeline3Verilog` faz esse reagrupamento a partir do hex de 1
+  * palavra por linha. `initialData` (so testes) continua em palavras.
   */
 class CacheMainMemory(
     depthWords: Int = 1024,
@@ -36,6 +44,10 @@ class CacheMainMemory(
     cfg: CacheConfig = CacheConfig.default
 ) extends Module {
   require(latency >= 0, "latency nao pode ser negativa")
+  require(
+    !cfg.blockRam || latency >= 1,
+    "cfg.blockRam exige latency >= 1: a leitura da memoria e sincrona (1 ciclo)"
+  )
   require(
     depthWords >= cfg.wordsPerLine,
     "memoria deve conter ao menos uma linha"
@@ -110,7 +122,67 @@ class CacheMainMemory(
   private val safeAddress = Mux(addressValid, selectedAddress, 0.U(32.W))
   private val baseWord = safeAddress(wordIndexBits + 1, 2)
 
-  if (programFile.nonEmpty) {
+  if (cfg.blockRam) {
+    // Memoria em bloco de RAM (SyncReadMem): UMA entrada por linha de cache,
+    // com a linha inteira como um unico UInt (palavra 0 nos bits menos
+    // significativos). A leitura e sincrona: o endereco da transacao em curso
+    // fica estavel desde o primeiro ciclo (porta dona do barramento), entao com
+    // `latency >= 1` o dado ja esta valido no ciclo do `ready`. So se escreve
+    // linha inteira, entao nao ha mascara de escrita.
+    val numLines = depthWords / cfg.wordsPerLine
+    val lineBits = cfg.wordsPerLine * 32
+    val memory = SyncReadMem(numLines, UInt(lineBits.W))
+    if (programFile.nonEmpty) {
+      // O arquivo hex tem UMA LINHA DE CACHE por linha do arquivo
+      // (wordsPerLine palavras de 32 bits, palavra 0 a direita).
+      loadMemoryFromFileInline(memory, programFile)
+    }
+    val lineIndex =
+      if (numLines > 1) safeAddress(wordIndexBits + 1, cfg.offsetBits)
+      else 0.U
+    val line = memory.read(lineIndex)
+    val lineWords = VecInit(
+      (0 until cfg.wordsPerLine).map(i => line(32 * i + 31, 32 * i))
+    )
+    when(complete && selectedWrite) {
+      memory.write(lineIndex, selectedWriteLine.asUInt)
+    }
+    if (programFile.nonEmpty) {
+      selectedReadLine := lineWords
+    } else {
+      // Testes Chisel: igual ao ramo sem blockRam (`lineWritten` + ROM de
+      // `initialData`), para o `reset` devolver a memoria ao estado inicial.
+      val lineWritten = RegInit(VecInit(Seq.fill(numLines)(false.B)))
+      val lineIsWritten =
+        if (numLines > 1) lineWritten(lineIndex) else lineWritten(0)
+      val preloaded = initialData.length
+      val romBits = log2Ceil(math.max(preloaded, 2))
+      val romSize = 1 << romBits
+      val rom = VecInit(
+        initialData.padTo(romSize, 0L).map(word => (word & 0xffffffffL).U(32.W))
+      )
+      for (word <- 0 until cfg.wordsPerLine) {
+        val wordAddress = baseWord + word.U
+        val initialWord =
+          if (preloaded == 0) 0.U(32.W)
+          else
+            Mux(
+              wordAddress < preloaded.U,
+              rom(wordAddress(romBits - 1, 0)),
+              0.U(32.W)
+            )
+        selectedReadLine(word) := Mux(
+          lineIsWritten,
+          lineWords(word),
+          initialWord
+        )
+      }
+      when(complete && selectedWrite) {
+        if (numLines > 1) lineWritten(lineIndex) := true.B
+        else lineWritten(0) := true.B
+      }
+    }
+  } else if (programFile.nonEmpty) {
     val memory = Mem(depthWords, UInt(32.W))
     loadMemoryFromFileInline(memory, programFile)
 

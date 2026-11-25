@@ -17,6 +17,15 @@ import chisel3.util._
   * (preenche a linha e reavalia) sWriteBack/sAllocate --mem.fault--> sFault
   * (io.cpu.fault = 1 ate a CPU derrubar o pedido; os arrays nao mudam)
   *
+  * `cfg.blockRam = true` (arrays com leitura sincrona, ver CacheArrays):
+  *   - o ciclo de sIdle apresenta o indice e sCompareTag consome o resultado,
+  *     entao o hit continua levando 2 ciclos;
+  *   - depois do refill entra sRefillWait (1 ciclo): sAllocate --mem.ready-->
+  *     sRefillWait --> sCompareTag, porque a linha so pode ser lida um ciclo
+  *     depois de gravada (1 ciclo a mais por miss);
+  *   - o flush gasta 2 ciclos por conjunto (1 para apresentar o indice, 1 para
+  *     avaliar), em vez de 1.
+  *
   * Contrato com a CPU: enquanto `stall` = 1 a CPU deve manter o pedido
   * (request/write/address/...) estavel, porque o controlador le o endereco
   * direto da porta durante todo o miss.
@@ -52,7 +61,7 @@ class Cache(
 
   private val wayBits = cfg.wayBits
 
-  private val states = Enum(8)
+  private val states = Enum(9)
   val sIdle = states(0)
   val sCompareTag = states(1)
   val sWriteBack = states(2)
@@ -63,9 +72,15 @@ class Cache(
   // A memoria recusou o refill/write-back do pedido corrente; fica aqui,
   // com io.cpu.fault = 1, ate a CPU derrubar o pedido.
   val sFault = states(7)
+  // So com blockRam: 1 ciclo entre o refill e sCompareTag (ver cabecalho).
+  val sRefillWait = states(8)
   val state = RegInit(sIdle)
   val victimReg = RegInit(0.U(wayBits.W))
   val flushSet = RegInit(0.U(cfg.indexBits.W))
+  // So com blockRam: tag/dado do conjunto `flushSet` ja chegaram (1 ciclo apos o
+  // indice ser apresentado). Sem blockRam a leitura e combinacional: sempre 1.
+  val flushReadValid = RegInit(false.B)
+  val flushDataReady: Bool = if (cfg.blockRam) flushReadValid else true.B
   val flushWay = RegInit(0.U(wayBits.W))
   val flushTag = RegInit(0.U(cfg.tagBits.W))
   val flushData = RegInit(
@@ -185,6 +200,7 @@ class Cache(
   // 1 enquanto o pedido corrente ja contou um miss (o hit pos-refill nao e hit)
   val refilling = RegInit(false.B)
   val evMissCycle = state === sWriteBack || state === sAllocate ||
+    state === sRefillWait ||
     (state === sCompareTag && io.cpu.request && !tagHit)
 
   private def counter(event: Bool): UInt = {
@@ -207,6 +223,7 @@ class Cache(
         flushFaultReg := false.B
         flushSet := 0.U
         flushWay := 0.U
+        flushReadValid := false.B
         state := sFlushScan
       }.elsewhen(io.cpu.request) {
         state := sCompareTag
@@ -291,7 +308,9 @@ class Cache(
         arrays.io.write.dirty := false.B
         repl.io.fill := true.B
         repl.io.fillWay := victimReg
-        state := sCompareTag // reavalia: agora e hit (e trata o store, se for o caso)
+        // reavalia: agora e hit (e trata o store, se for o caso). Com blockRam a
+        // linha recem-gravada so pode ser lida um ciclo depois.
+        state := (if (cfg.blockRam) sRefillWait else sCompareTag)
       }.elsewhen(io.mem.fault) {
         evFault := true.B
         refilling := false.B
@@ -300,9 +319,19 @@ class Cache(
       }
     }
 
+    is(sRefillWait) {
+      // Ciclo de espera: o indice e apresentado de novo, e no proximo ciclo
+      // (sCompareTag) tag e dado ja refletem a linha gravada em sAllocate.
+      io.cpu.stall := true.B
+      state := sCompareTag
+    }
+
     is(sFlushScan) {
       io.cpu.stall := true.B
-      when(flushDirtyWays.asUInt.orR) {
+      when(!flushDataReady) {
+        // blockRam: espera tag/dado do conjunto `flushSet` chegarem
+        flushReadValid := true.B
+      }.elsewhen(flushDirtyWays.asUInt.orR) {
         flushWay := flushCandidateWay
         flushTag := flushCandidate.tag
         flushData := flushCandidate.data
@@ -312,6 +341,7 @@ class Cache(
           state := sFlushDone
         }.otherwise {
           flushSet := flushSet + 1.U
+          flushReadValid := false.B
         }
       }
     }

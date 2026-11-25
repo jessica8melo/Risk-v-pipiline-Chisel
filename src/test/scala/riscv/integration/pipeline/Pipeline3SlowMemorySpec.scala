@@ -20,7 +20,18 @@ import riscv.pipeline.Pipeline3
 class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
   behavior of "Pipeline3 com memoria lenta"
 
-  private val Latencies = Seq(0, 4)
+  /** Uma execucao do programa: latencia da memoria e se as caches/memoria usam
+    * blocos de RAM (`CacheConfig.blockRam`, leitura sincrona).
+    */
+  private case class Variant(latency: Int, blockRam: Boolean = false) {
+    override def toString: String =
+      if (blockRam) s"$latency, blockRAM" else latency.toString
+  }
+  // A latencia 0 e o controle. blockRam exige latencia >= 1; a terceira variante
+  // roda o MESMO programa com RAM sincrona e deve dar os mesmos resultados
+  // (so mais ciclos). Cada variante e uma compilacao do Pipeline3.
+  private val Variants =
+    Seq(Variant(0), Variant(4), Variant(4, blockRam = true))
 
   // ---- codificacao ------------------------------------------------------
   private def addi(rd: Int, rs1: Int, imm: Int): Long =
@@ -301,14 +312,14 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
   private val SmallCache =
     CacheConfig(capacityBytes = 1024, ways = 4, lineBytes = 16)
 
-  private def runAll(latency: Int, maxCycles: Int = 8000): Seq[Segment] = {
+  private def runAll(variant: Variant, maxCycles: Int = 8000): Seq[Segment] = {
     val log = ArrayBuffer.empty[(Int, BigInt)]
     test(
       new Pipeline3(
         initialProgram = built.program,
         memoryWords = 256,
-        memoryLatency = latency,
-        cacheConfig = SmallCache
+        memoryLatency = variant.latency,
+        cacheConfig = SmallCache.copy(blockRam = variant.blockRam)
       )
     ) { dut =>
       var cycle = 0
@@ -330,21 +341,21 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
     }
     require(
       segments.size == scenarios.size,
-      s"latencia $latency: so ${segments.size} de ${scenarios.size} cenarios terminaram"
+      s"variante $variant: so ${segments.size} de ${scenarios.size} cenarios terminaram"
     )
     segments.toSeq
   }
 
   // Try memoriza a falha tambem: se a simulacao quebrar, nao roda de novo.
-  private lazy val results: Map[Int, Try[Seq[Segment]]] =
-    Latencies.map(l => l -> Try(runAll(l))).toMap
-  private def segment(latency: Int, name: String): Segment =
+  private lazy val results: Map[Variant, Try[Seq[Segment]]] =
+    Variants.map(v => v -> Try(runAll(v))).toMap
+  private def segment(latency: Variant, name: String): Segment =
     results(latency).get(idx(name))
-  private def writesOf(latency: Int, name: String, rd: Int): Seq[BigInt] =
+  private def writesOf(latency: Variant, name: String, rd: Int): Seq[BigInt] =
     segment(latency, name).collect { case (`rd`, d) => d }
 
   private def expectTrap(
-      latency: Int,
+      latency: Variant,
       name: String,
       cause: Int,
       tval: Int
@@ -366,7 +377,7 @@ class Pipeline3SlowMemorySpec extends AnyFlatSpec with ChiselScalatestTester {
   }
 
   // ---- testes -----------------------------------------------------------
-  for (lat <- Latencies) {
+  for (lat <- Variants) {
     it should s"executar cadeia de addi atravessando varias linhas, sem perder nem duplicar writebacks (latencia $lat)" in {
       assert(writesOf(lat, "cadeia", 10) == ChainSums.map(BigInt(_)))
     }

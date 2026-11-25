@@ -303,6 +303,25 @@ ciclos = numSets + 4 + sujas * (latencia + 2)
 sbt "testOnly riscv.cache.CacheMemoryLatencyTest riscv.integration.pipeline.Pipeline3FenceICostSpec"
 ```
 
+## Blocos de RAM (`blockRam`)
+
+Por padrao, tag e dado das caches e a memoria principal sao `Mem` com leitura combinacional. O Quartus nao mapeia isso em M10K e sintetiza tudo em registradores (cerca de 185 mil bits), o que nao cabe na DE1-SoC. `CacheConfig(blockRam = true)` troca esses arrays por `SyncReadMem` (leitura sincrona), que mapeia em M10K. **Vem desligado**; com ele desligado o hardware e os tempos sao os de antes.
+
+| | `blockRam = false` (padrao) | `blockRam = true` |
+|---|---|---|
+| Hit | 2 ciclos | 2 ciclos (o ciclo de `sIdle` apresenta o indice, `sCompareTag` consome) |
+| Miss limpo | `L + 4` | `L + 5` (estado novo `sRefillWait` entre o refill e a reavaliacao) |
+| Miss com write-back | `2L + 5` | `2L + 6` |
+| FENCE.I (varredura) | 1 ciclo por conjunto | 2 ciclos por conjunto (apresenta o indice e avalia) |
+| `CacheMainMemory` | `latency >= 0` | exige `latency >= 1` (leitura sincrona) |
+
+- `valid` e `dirty` continuam registradores (1 bit por linha); so tag e dado vao para RAM. O dado de cada via e guardado em uma memoria de 32 bits por palavra (128 x 32) e a tag em outra, que cabem em um M10K cada.
+- A memoria principal usa `SyncReadMem` com a linha inteira como um unico `UInt` (palavra 0 nos bits menos significativos). Nesse modo o hex da memoria tem **uma linha de cache por linha**: `GeneratePipeline3Verilog` faz o reagrupamento (`HexLines`) a partir do hex de uma palavra por linha.
+- Gerar o Verilog: `sbt "runMain riscv.pipeline.GeneratePipeline3Verilog program.hex 1024 1 8192 true"` (o 5o argumento liga `blockRam`; a latencia padrao passa a ser 1). O arquivo `quartus/program_lines.hex` e o `program.hex` ja reagrupado.
+- Efeito no modelo do FENCE.I: o custo da varredura passa de `numSets` para `2 * numSets`; os dados da Figura 6.2 e a previsao `fencePredicted` foram feitos para o modo padrao.
+- Testes: `CacheBlockRamTest` (hit/miss/despejo/flush e trafego aleatorio contra um modelo, memoria com `blockRam`, L1 com latencia, `HexLines`) e a variante `4, blockRAM` do `Pipeline3SlowMemorySpec` (o mesmo programa do pipeline completo).
+- **Nao verificado no Quartus**: a inferencia de M10K e o ganho de area dependem do relatorio de sintese.
+
 ## Pendencias conhecidas
 
 - `DIV`, `DIVU`, `REM` e `REMU` (extensao M so tem multiplicacao).
