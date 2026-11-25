@@ -54,3 +54,8 @@ assembly_code
 work/
 transcript
 vsim.wlf
+
+# quartus
+quartus/db/
+quartus/output_files/
+quartus/incremental_db/
