@@ -29,6 +29,13 @@ object ReplacementPolicy {
   *   tamanho da linha em bytes (potencia de 2, ao menos 8)
   * @param policy
   *   politica de substituicao
+  * @param blockRam
+  *   `false` (padrao): tag e dado das caches e a memoria principal sao `Mem`
+  *   com leitura combinacional (o Quartus os sintetiza como registradores, o
+  *   que nao cabe numa FPGA pequena). `true`: leitura SINCRONA (`SyncReadMem`),
+  *   que mapeia em blocos de RAM (M10K), ao custo de ciclos: 1 ciclo a mais por
+  *   miss (`sRefillWait`) e 2 ciclos por conjunto no flush; a memoria principal
+  *   passa a exigir `latency >= 1`.
   *
   * Configuracao padrao (linha de base): 8 KiB, 4 vias, linha de 16 B, LRU,
   * write-back + write-allocate, bloqueante.
@@ -41,7 +48,8 @@ case class CacheConfig(
     capacityBytes: Int = 8 * 1024,
     ways: Int = 4,
     lineBytes: Int = 16,
-    policy: ReplacementPolicy = ReplacementPolicy.Lru
+    policy: ReplacementPolicy = ReplacementPolicy.Lru,
+    blockRam: Boolean = false
 ) {
   val wordBytes: Int = 4
   val wordsPerLine: Int = lineBytes / wordBytes

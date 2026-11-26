@@ -54,3 +54,25 @@ assembly_code
 work/
 transcript
 vsim.wlf
+
+# quartus: versionar so o projeto (qpf/qsf/sdc/tcl, top.v escrito a mao e program.hex);
+# o resto e gerado pelo Quartus ou pelo GeneratePipeline3Verilog
+!quartus/top.v
+quartus/Pipeline3Fpga.v
+quartus/program_lines.hex
+quartus/db/
+quartus/output_files/
+quartus/incremental_db/
+quartus/simulation/
+quartus/*.qws
+quartus/*.sof
+quartus/*.pof
+quartus/*.rpt
+quartus/*.summary
+quartus/*.smsg
+quartus/*.jdi
+quartus/*.done
+quartus/*.pin
+quartus/*.qmsg
+quartus/c5_pin_model_dump.txt
+quartus/src/
